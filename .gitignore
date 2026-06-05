@@ -1,0 +1,42 @@
+# Build output
+target/
+*.class
+*.jar
+*.war
+
+# Maven
+.mvn/wrapper/maven-wrapper.jar
+
+# IDE — IntelliJ IDEA
+.idea/
+*.iml
+*.iws
+*.ipr
+
+# IDE — VS Code
+.vscode/
+
+# IDE — Eclipse
+.project
+.classpath
+.settings/
+
+# OS noise
+.DS_Store
+Thumbs.db
+
+# Local config overrides — never commit secrets
+src/main/resources/application-local.yml
+src/main/resources/application-local*.yml
+application-local.yml
+.env
+.env.*
+
+# Maven debug / scratch files
+cp.txt
+dependency-reduced-pom.xml
+
+# Reference docs and Claude Code state — keep these out of the project repo
+agentscope-java-docs/
+.claude/
+

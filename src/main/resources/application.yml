@@ -1,0 +1,29 @@
+server:
+  port: 8080
+
+spring:
+  application:
+    name: simple-ai-agent
+
+# Anthropic-compatible gateway.
+#
+# The API key is NEVER committed. Two ways to provide it locally:
+#   1. Env var:  set ANTHROPIC_API_KEY before starting the app
+#   2. Override: create src/main/resources/application-local.yml (gitignored)
+#                with the same structure and put the real key there.
+agentscope:
+  anthropic:
+    api-key: ${ANTHROPIC_API_KEY:}
+    model-name: MiniMax-M3
+    base-url: https://api.minimaxi.com/anthropic
+  session:
+    storage-dir: ${user.home}/.agentscope/sessions
+  agent:
+    name: Assistant
+    sys-prompt: "You are a helpful assistant. Keep answers concise."
+    max-iters: 10
+
+logging:
+  level:
+    io.agentscope: INFO
+    com.example.agent: DEBUG
