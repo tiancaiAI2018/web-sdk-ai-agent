@@ -63,27 +63,46 @@ public class TokenService {
         }
     }
 
-    /** 签发 token。subject = clientId。 */
-    public String issue(String clientId) {
+    /** 签发结果,包含 JWT 本身 + 唯一标识 jti(供 audit 关联)。 */
+    public record Issued(String jwt, String jti) {}
+
+    /** 默认 scope。新接入应用若无显式声明,先按 chat:read 起步。 */
+    public static final String DEFAULT_SCOPE = "chat:read";
+
+    /** 签发 token。subject = clientId,jti = UUID,scope = DEFAULT_SCOPE。 */
+    public Issued issue(String clientId) {
+        return issue(clientId, DEFAULT_SCOPE);
+    }
+
+    /** 带 scope 的签发(留口子给后续 admin 接口用)。 */
+    public Issued issue(String clientId, String scope) {
         Instant now = Instant.now();
-        return Jwts.builder()
+        String jti = java.util.UUID.randomUUID().toString();
+        String jwt = Jwts.builder()
             .subject(clientId)
+            .id(jti)
             .issuer(props.getIssuer())
             .issuedAt(Date.from(now))
             .expiration(Date.from(now.plusSeconds(props.getTtlSeconds())))
+            .claim("scope", scope)
             .signWith(privateKey, SIG.RS256)
             .compact();
+        return new Issued(jwt, jti);
     }
 
-    /** 验签并返回 subject(clientId)。失败抛 JwtException。 */
-    public String verify(String token) throws JwtException {
-        return Jwts.parser()
+    /** 验签结果,返回 clientId + jti + scope,供 filter 写 audit 用。 */
+    public record Verified(String clientId, String jti, String scope) {}
+
+    /** 验签并返回三元组。失败抛 JwtException。 */
+    public Verified verify(String token) throws JwtException {
+        var claims = Jwts.parser()
             .verifyWith(publicKey)
             .requireIssuer(props.getIssuer())
             .build()
             .parseSignedClaims(token)
-            .getPayload()
-            .getSubject();
+            .getPayload();
+        String scope = claims.get("scope", String.class);
+        return new Verified(claims.getSubject(), claims.getId(), scope == null ? DEFAULT_SCOPE : scope);
     }
 
     /** 把公钥转成 JWK 字符串(供 JWKS 端点嵌入)。 */

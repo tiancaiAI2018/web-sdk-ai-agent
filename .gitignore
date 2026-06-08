@@ -43,6 +43,9 @@ agentscope-java-docs/
 # H2 local database — regenerable
 data/
 
+# Node deps (mock third-party backend)
+examples/node_modules/
+
 # MCP / IDE artifacts
 .codegraph/
 .cursor/

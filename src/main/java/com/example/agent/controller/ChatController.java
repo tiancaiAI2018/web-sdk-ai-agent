@@ -6,23 +6,20 @@ import com.example.agent.session.SessionManager;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.message.Msg;
 import io.swagger.v3.oas.annotations.Operation;
-import io.swagger.v3.oas.annotations.Parameter;
-import io.swagger.v3.oas.annotations.enums.ParameterIn;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
 import org.springframework.http.MediaType;
+import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
+import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.PathVariable;
 import org.springframework.web.bind.annotation.PostMapping;
 import org.springframework.web.bind.annotation.RequestBody;
-import org.springframework.web.bind.annotation.RequestHeader;
 import org.springframework.web.bind.annotation.RequestMapping;
 import org.springframework.web.bind.annotation.RestController;
 import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
-
-import java.time.Duration;
 
 /**
  * Two endpoints:
@@ -51,18 +48,19 @@ public class ChatController {
     /** Blocking request/response. */
     @PostMapping("/{sessionId}")
     @Operation(summary = "阻塞对话",
-        description = "一次性返回完整 reply(JSON)。sessionId 即 AgentScope JsonSession 的 key。")
+        description = "一次性返回完整 reply(JSON)。sessionId 必须以 {clientId}: 开头。")
     public Mono<ChatResponse> chat(@PathVariable String sessionId,
                                    @RequestBody ChatRequest body,
                                    ServerWebExchange exchange) {
         if (body == null || body.message() == null || body.message().isBlank()) {
             return Mono.error(new IllegalArgumentException("message must not be blank"));
         }
-        String clientId = principalOf(exchange).clientId();
-        audit.logChatStart(clientId, sessionId);
+        AuthPrincipal p = principalOf(exchange);
+        String ip = AuditService.extractIp(exchange.getRequest());
+        audit.logChatStart(p.clientId(), p.jti(), sessionId, ip);
         return sessions.call(sessionId, body.message())
             .map(resp -> {
-                audit.logChatDone(clientId, sessionId);
+                audit.logChatDone(p.clientId(), p.jti(), sessionId, ip);
                 return new ChatResponse(
                     sessionId,
                     resp.getTextContent() == null ? "" : resp.getTextContent());
@@ -78,27 +76,22 @@ public class ChatController {
      */
     @PostMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
     @Operation(summary = "SSE 流式对话",
-        description = "text/event-stream。SDK 端按 SSE 帧解析,每帧是 AgentScope Event,"
-                   + "最后一帧 id=last 表示流结束。",
-        parameters = @Parameter(name = "X-User-Message", in = ParameterIn.HEADER,
-            description = "可选:用 header 传消息(避免包 body)。", required = false))
+        description = "text/event-stream。sessionId 必须以 {clientId}: 开头。"
+                   + "SDK 端按 SSE 帧解析,每帧是 AgentScope Event,最后一帧 id=last 表示流结束。")
     public Flux<ServerSentEvent<String>> stream(@PathVariable String sessionId,
-                                                @RequestHeader(value = "X-User-Message",
-                                                               required = false) String headerMsg,
-                                                @RequestBody(required = false) ChatRequest body,
+                                                @RequestBody ChatRequest body,
                                                 ServerWebExchange exchange) {
-        String text = headerMsg != null ? headerMsg
-            : (body == null ? null : body.message());
-        if (text == null || text.isBlank()) {
-            return Flux.error(new IllegalArgumentException(
-                "Provide message via X-User-Message header or JSON body"));
+        // 消息必须在 body 里(HTTP header 是 ISO-8859-1,装不下中文/emoji)。
+        if (body == null || body.message() == null || body.message().isBlank()) {
+            return Flux.error(new IllegalArgumentException("message must not be blank"));
         }
-        String clientId = principalOf(exchange).clientId();
-        audit.logChatStart(clientId, sessionId);
+        AuthPrincipal p = principalOf(exchange);
+        String ip = AuditService.extractIp(exchange.getRequest());
+        audit.logChatStart(p.clientId(), p.jti(), sessionId, ip);
 
-        return sessions.stream(sessionId, text)
+        return sessions.stream(sessionId, body.message())
             .map(ChatController::toSse)
-            .doOnComplete(() -> audit.logChatDone(clientId, sessionId));
+            .doOnComplete(() -> audit.logChatDone(p.clientId(), p.jti(), sessionId, ip));
     }
 
     private static ServerSentEvent<String> toSse(Event event) {
@@ -122,4 +115,12 @@ public class ChatController {
 
     public record ChatRequest(String message) {}
     public record ChatResponse(String sessionId, String reply) {}
+
+    /** 把 sanitize / 业务校验抛的 IAE 翻成 400(默认会 500)。 */
+    @ExceptionHandler(IllegalArgumentException.class)
+    public Mono<ResponseEntity<java.util.Map<String, String>>> handleBadInput(IllegalArgumentException e) {
+        return Mono.just(ResponseEntity.badRequest()
+            .body(java.util.Map.of("error", "bad_request", "message",
+                e.getMessage() == null ? "" : e.getMessage())));
+    }
 }

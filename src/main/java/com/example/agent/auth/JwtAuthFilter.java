@@ -6,6 +6,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.core.Ordered;
 import org.springframework.core.annotation.Order;
+import org.springframework.http.HttpMethod;
 import org.springframework.http.HttpStatus;
 import org.springframework.http.MediaType;
 import org.springframework.stereotype.Component;
@@ -15,14 +16,17 @@ import org.springframework.web.server.WebFilterChain;
 import reactor.core.publisher.Mono;
 
 import java.nio.charset.StandardCharsets;
+import java.net.URLDecoder;
 import java.util.Set;
 
 /**
- * 在所有进入 controller 的请求中校验 Bearer JWT。
+ * 鉴权 + session namespace 校验。
+ *
  * 白名单精确路径:/auth/token(发 token)、/.well-known/jwks.json(取公钥)。
  * 前缀白名单:springdoc 资源(/swagger-ui、/v3/api-docs、/webjars)、
  *          静态文件(/sdk/、/examples/、/favicon.ico)。
- * 校验通过后把 AuthPrincipal 挂到 exchange.attributes。
+ *
+ * /chat/** 额外校验 sessionId 必须以 `clientId:` 开头,防止跨 tenant 访问会话。
  */
 @Component
 @Order(Ordered.HIGHEST_PRECEDENCE)
@@ -35,18 +39,16 @@ public class JwtAuthFilter implements WebFilter {
         "/.well-known/jwks.json"
     );
 
-    /**
-     * 不需鉴权的前缀(主要是 springdoc-openapi 的 UI / 资源 + 静态文件)。
-     * 精确路径用 WHITELIST,前缀匹配用这里。
-     */
     private static final String[] WHITELIST_PREFIXES = {
         "/swagger-ui",
         "/v3/api-docs",
         "/webjars",
-        "/sdk/",        // 浏览器 SDK
-        "/examples/",   // 第三方 demo 页
+        "/sdk/",
+        "/examples/",
         "/favicon.ico"
     };
+
+    private static final String CHAT_PREFIX = "/chat/";
 
     private final TokenService tokens;
     private final AuditService audit;
@@ -60,8 +62,7 @@ public class JwtAuthFilter implements WebFilter {
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
         // CORS 预检 OPTIONS 不带 Authorization,不能在这里拦截,交给 CorsWebFilter 处理。
-        if (org.springframework.http.HttpMethod.OPTIONS.equals(
-                exchange.getRequest().getMethod())) {
+        if (HttpMethod.OPTIONS.equals(exchange.getRequest().getMethod())) {
             return chain.filter(exchange);
         }
         if (isWhitelisted(path)) {
@@ -69,23 +70,45 @@ public class JwtAuthFilter implements WebFilter {
         }
 
         String auth = exchange.getRequest().getHeaders().getFirst("Authorization");
+        String ip = AuditService.extractIp(exchange.getRequest());
         if (auth == null || !auth.startsWith("Bearer ")) {
-            return reject(exchange, "missing_bearer");
+            audit.logAuthFail(path, ip);
+            return reject(exchange, "missing_bearer", HttpStatus.UNAUTHORIZED);
         }
         String token = auth.substring("Bearer ".length()).trim();
+        TokenService.Verified verified;
         try {
-            String clientId = tokens.verify(token);
-            exchange.getAttributes().put(AuthPrincipal.ATTR, new AuthPrincipal(clientId));
-            return chain.filter(exchange);
+            verified = tokens.verify(token);
         } catch (JwtException e) {
             log.debug("JWT verify failed: {}", e.getMessage());
-            audit.logAuthFail(path);
-            return reject(exchange, "invalid_token");
+            audit.logAuthFail(path, ip);
+            return reject(exchange, "invalid_token", HttpStatus.UNAUTHORIZED);
         }
+
+        // /chat/** 强制 session namespace
+        if (path.startsWith(CHAT_PREFIX)) {
+            // 浏览器 fetch 会把 sessionId 用 encodeURIComponent 编一遍,
+            // 所以 path 里是 %3A 而不是 :。先 URL-decode 再校验。
+            String sessionId = URLDecoder.decode(path.substring(CHAT_PREFIX.length()), StandardCharsets.UTF_8);
+            // 截到下一个 / 或末尾(忽略 /stream 后缀)
+            int slash = sessionId.indexOf('/');
+            if (slash > 0) sessionId = sessionId.substring(0, slash);
+            String nsPrefix = verified.clientId() + ":";
+            if (!sessionId.startsWith(nsPrefix)) {
+                audit.logCrossTenantAccess(verified.clientId(), verified.jti(), sessionId, ip);
+                return reject(exchange, "session_namespace_mismatch", HttpStatus.BAD_REQUEST);
+            }
+        }
+
+        exchange.getAttributes().put(
+            AuthPrincipal.ATTR,
+            new AuthPrincipal(verified.clientId(), verified.jti(), verified.scope())
+        );
+        return chain.filter(exchange);
     }
 
-    private Mono<Void> reject(ServerWebExchange exchange, String code) {
-        exchange.getResponse().setStatusCode(HttpStatus.UNAUTHORIZED);
+    private Mono<Void> reject(ServerWebExchange exchange, String code, HttpStatus status) {
+        exchange.getResponse().setStatusCode(status);
         exchange.getResponse().getHeaders().setContentType(MediaType.APPLICATION_JSON);
         byte[] body = ("{\"error\":\"" + code + "\"}").getBytes(StandardCharsets.UTF_8);
         return exchange.getResponse().writeWith(Mono.just(exchange.getResponse()

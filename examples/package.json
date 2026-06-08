@@ -1,0 +1,16 @@
+{
+  "name": "third-party-mock",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Mock 第三方后端 —— 持有 secret,代理 /auth/token",
+  "main": "third-party-mock.js",
+  "scripts": {
+    "start": "node third-party-mock.js"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "dependencies": {
+    "express": "^4.21.0"
+  }
+}
