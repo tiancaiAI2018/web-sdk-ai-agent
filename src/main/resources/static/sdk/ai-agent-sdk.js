@@ -47,13 +47,18 @@
   /** 取一个未过期的 token;无则拉新的。提前 30s 续期。 */
   AIAgent.prototype.getToken = async function () {
     var now = Math.floor(Date.now() / 1000);
-    if (this._token && this._exp > now + 30) return this._token;
+    if (this._token && this._exp > now + 30) {
+      console.log('[AIAgent SDK] reusing cached token');
+      return this._token;
+    }
+    console.log('[AIAgent SDK] fetching new token from', this.endpoint + '/auth/token');
     var secret = await this.getSecret();
     var r = await fetch(this.endpoint + '/auth/token', {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ clientId: this.clientId, clientSecret: secret })
     });
+    console.log('[AIAgent SDK] token response', r.status);
     if (!r.ok) {
       var t = '';
       try { t = await r.text(); } catch (_) {}
@@ -83,18 +88,26 @@
     try { token = await this.getToken(); }
     catch (e) { onError(e); return; }
 
+    var url = this.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/stream';
+    console.log('[AIAgent SDK] POST', url, 'sessionId=' + sessionId, 'msgLen=' + message.length);
+
     var r;
     try {
-      r = await fetch(this.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/stream', {
+      r = await fetch(url, {
         method: 'POST',
         headers: {
           'Authorization': 'Bearer ' + token,
-          'X-User-Message': message,
+          'Content-Type': 'application/json',
           'Accept': 'text/event-stream'
-        }
+        },
+        body: JSON.stringify({ message: message })
       });
-    } catch (e) { onError(e); return; }
+    } catch (e) {
+      console.error('[AIAgent SDK] fetch threw', e);
+      onError(e); return;
+    }
 
+    console.log('[AIAgent SDK] stream response', r.status, 'content-type=', r.headers.get('content-type'));
     if (!r.ok || !r.body) {
       onError(new Error('http ' + r.status));
       return;

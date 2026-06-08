@@ -19,7 +19,9 @@ import java.util.Set;
 
 /**
  * 在所有进入 controller 的请求中校验 Bearer JWT。
- * 白名单:/auth/token(发 token)、/.well-known/jwks.json(取公钥)。
+ * 白名单精确路径:/auth/token(发 token)、/.well-known/jwks.json(取公钥)。
+ * 前缀白名单:springdoc 资源(/swagger-ui、/v3/api-docs、/webjars)、
+ *          静态文件(/sdk/、/examples/、/favicon.ico)。
  * 校验通过后把 AuthPrincipal 挂到 exchange.attributes。
  */
 @Component
@@ -33,6 +35,19 @@ public class JwtAuthFilter implements WebFilter {
         "/.well-known/jwks.json"
     );
 
+    /**
+     * 不需鉴权的前缀(主要是 springdoc-openapi 的 UI / 资源 + 静态文件)。
+     * 精确路径用 WHITELIST,前缀匹配用这里。
+     */
+    private static final String[] WHITELIST_PREFIXES = {
+        "/swagger-ui",
+        "/v3/api-docs",
+        "/webjars",
+        "/sdk/",        // 浏览器 SDK
+        "/examples/",   // 第三方 demo 页
+        "/favicon.ico"
+    };
+
     private final TokenService tokens;
     private final AuditService audit;
 
@@ -44,7 +59,12 @@ public class JwtAuthFilter implements WebFilter {
     @Override
     public Mono<Void> filter(ServerWebExchange exchange, WebFilterChain chain) {
         String path = exchange.getRequest().getPath().value();
-        if (WHITELIST.contains(path)) {
+        // CORS 预检 OPTIONS 不带 Authorization,不能在这里拦截,交给 CorsWebFilter 处理。
+        if (org.springframework.http.HttpMethod.OPTIONS.equals(
+                exchange.getRequest().getMethod())) {
+            return chain.filter(exchange);
+        }
+        if (isWhitelisted(path)) {
             return chain.filter(exchange);
         }
 
@@ -70,5 +90,13 @@ public class JwtAuthFilter implements WebFilter {
         byte[] body = ("{\"error\":\"" + code + "\"}").getBytes(StandardCharsets.UTF_8);
         return exchange.getResponse().writeWith(Mono.just(exchange.getResponse()
             .bufferFactory().wrap(body)));
+    }
+
+    private static boolean isWhitelisted(String path) {
+        if (WHITELIST.contains(path)) return true;
+        for (String prefix : WHITELIST_PREFIXES) {
+            if (path.startsWith(prefix)) return true;
+        }
+        return false;
     }
 }
