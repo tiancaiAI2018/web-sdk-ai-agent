@@ -32,9 +32,9 @@ public class SessionManager {
 
     private static final Logger log = LoggerFactory.getLogger(SessionManager.class);
 
-    /** Allow only safe characters in sessionId — defends against path traversal
-     *  on the JsonSession filesystem backend. See session.md "Security Note". */
-    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9_-]{1,128}");
+    /** 允许安全字符 + namespace 分隔符 ':'(v2 起,sessionId 形如 {clientId}:{userPart})。
+     *  ':' 是 RFC 3986 sub-delim,在 URL path 里合法;JsonSession 落盘也安全(无 '/',无 '..')。 */
+    private static final Pattern SAFE_ID = Pattern.compile("[A-Za-z0-9_\\-:]{1,128}");
 
     private final ChatModelBase model;
     private final Session session;

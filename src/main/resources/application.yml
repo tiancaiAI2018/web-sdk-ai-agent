@@ -39,6 +39,7 @@ agentscope:
     public-key-path:  ${user.home}/.agentscope/jwt-public.pem
     issuer: simple-ai-agent
     ttl-seconds: 300
+    refresh-ttl-seconds: 604800  # 7 天
   cors:
     allowed-origins:
       - http://localhost:5500
@@ -49,6 +50,11 @@ agentscope:
     client-id: demo-app
     client-secret: demo-secret
     secret-bcrypt-cost: 10
+  ratelimit:
+    # 每个 clientId 桶的容量(瞬时 burst 上限)
+    capacity: 60
+    # 每秒补充的 token 数(0.2 = 12/分钟,0.05 = 3/分钟)
+    refill-per-sec: 0.2
 
 logging:
   level:
