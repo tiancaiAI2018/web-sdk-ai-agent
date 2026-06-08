@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>AIAgent SDK 第三方接入 demo</title>
+  <style>
+    body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 720px; margin: 40px auto; padding: 0 16px; }
+    #out { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; min-height: 80px; border-radius: 4px; background: #fafafa; }
+    input, button { font: inherit; padding: 6px 10px; }
+    .row { display: flex; gap: 8px; margin: 12px 0; }
+    input[type=text] { flex: 1; }
+  </style>
+</head>
+<body>
+  <h2>第三方网页接入 AI Agent demo</h2>
+  <p>本页面以第三方身份(localhost:5500)调用运行在 <code>localhost:8080</code> 的 AI Agent 服务。</p>
+
+  <div class="row">
+    <input id="msg" type="text" value="用一句话介绍你自己" />
+    <button id="send">发送</button>
+  </div>
+  <div id="out"></div>
+  <div id="status" style="color: #888; font-size: 12px; margin-top: 8px;"></div>
+
+  <script src="/sdk/ai-agent-sdk.js"></script>
+  <script>
+    var out = document.getElementById('out');
+    var status = document.getElementById('status');
+    var btn = document.getElementById('send');
+    var input = document.getElementById('msg');
+
+    var agent = AIAgent.init({
+      endpoint: 'http://localhost:8080',
+      clientId: 'demo-app',
+      // 真实场景:secret 永远不应出现在前端代码里,应走自家后端换 access_token。
+      // demo 直接给明文是为了最快跑通整条链路。
+      getSecret: async function () { return 'demo-secret'; }
+    });
+
+    btn.addEventListener('click', function () {
+      out.textContent = '';
+      status.textContent = 'requesting...';
+      agent.stream({
+        sessionId: 'demo-' + Date.now(),
+        message: input.value,
+        onChunk: function (ev) { out.append(ev.data || ''); },
+        onDone:  function ()   { status.textContent = 'done'; },
+        onError: function (e)  { status.textContent = 'error: ' + e.message; }
+      });
+    });
+  </script>
+</body>
+</html>

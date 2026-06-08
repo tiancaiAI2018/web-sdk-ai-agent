@@ -40,3 +40,14 @@ dependency-reduced-pom.xml
 agentscope-java-docs/
 .claude/
 
+# H2 local database — regenerable
+data/
+
+# MCP / IDE artifacts
+.codegraph/
+.cursor/
+.mcp.json
+
+# daemon pid files
+*.pid
+
