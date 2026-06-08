@@ -10,6 +10,7 @@
     .row { display: flex; gap: 8px; margin: 12px 0; }
     input[type=text] { flex: 1; }
     .meta { color: #888; font-size: 12px; }
+    #sid { font-family: ui-monospace, "Cascadia Code", monospace; }
   </style>
 </head>
 <body>
@@ -17,6 +18,9 @@
   <p>
     流程:浏览器 → 第三方 mock 后端 (7000) → AI Agent (8080)。<br>
     <strong>secret 永远不离开第三方后端 ↔ AI Agent 之间</strong>。
+  </p>
+  <p class="meta">当前会话:<code id="sid">未开始</code>
+    <button id="new" style="padding: 2px 8px; font-size: 12px;">开新会话</button>
   </p>
 
   <div class="row">
@@ -30,8 +34,29 @@
   <script>
     var out = document.getElementById('out');
     var status = document.getElementById('status');
+    var sidEl = document.getElementById('sid');
     var btn = document.getElementById('send');
+    var newBtn = document.getElementById('new');
     var input = document.getElementById('msg');
+
+    // 会话 ID 持久化在页面生命周期内,首次点击才生成。
+    // 点"开新会话"才重置,实现多轮对话。
+    var currentSid = null;
+    function ensureSid() {
+      if (!currentSid) {
+        // 形如 demo-app:user-{ts},必须以 {clientId}: 开头
+        currentSid = 'demo-app:user-' + Date.now();
+        sidEl.textContent = currentSid;
+      }
+      return currentSid;
+    }
+    newBtn.addEventListener('click', function () {
+      currentSid = null;
+      sidEl.textContent = '未开始';
+      out.textContent = '';
+      status.textContent = '';
+      input.focus();
+    });
 
     var agent = AIAgent.init({
       endpoint: 'http://localhost:8080',
@@ -45,17 +70,19 @@
     });
 
     btn.addEventListener('click', function () {
-      out.textContent = '';
-      status.textContent = 'requesting...';
-      // sessionId 必须以 {clientId}: 开头,这里 demo-app 是 clientId
-      var sid = 'demo-app:user-' + Date.now();
+      var sid = ensureSid();
+      status.textContent = 'requesting... (session ' + sid + ')';
       agent.stream({
         sessionId: sid,
         message: input.value,
         onChunk: function (ev) { out.append(ev.data || ''); },
-        onDone:  function ()   { status.textContent = 'done (' + sid + ')'; },
+        onDone:  function ()   { status.textContent = 'done (session ' + sid + ')'; },
         onError: function (e)  { status.textContent = 'error: ' + e.message; }
       });
+    });
+
+    input.addEventListener('keydown', function (e) {
+      if (e.key === 'Enter') btn.click();
     });
   </script>
 </body>
