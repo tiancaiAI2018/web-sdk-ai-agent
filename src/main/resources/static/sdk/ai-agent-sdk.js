@@ -93,7 +93,43 @@
     '.aiagent-sdk-send:disabled{background:#9ca3af;cursor:not-allowed}',
     '.aiagent-sdk-badge{position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:10px;min-width:18px;height:18px;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0 5px;box-shadow:0 0 0 2px #fff}',
     '.aiagent-sdk-panel.aiagent-sdk-pos-bl{right:auto;left:24px}',
-    '.aiagent-sdk-bubble.aiagent-sdk-pos-bl{right:auto;left:24px}'
+    '.aiagent-sdk-bubble.aiagent-sdk-pos-bl{right:auto;left:24px}',
+    // ===== Markdown 渲染样式(marked + DOMPurify) =====',
+    '.aiagent-sdk-msg p{margin:.35em 0}',
+    '.aiagent-sdk-msg p:first-child{margin-top:0}',
+    '.aiagent-sdk-msg p:last-child{margin-bottom:0}',
+    '.aiagent-sdk-msg h1,.aiagent-sdk-msg h2,.aiagent-sdk-msg h3,.aiagent-sdk-msg h4{font-weight:600;line-height:1.3;margin:.7em 0 .3em}',
+    '.aiagent-sdk-msg h1{font-size:1.3em}',
+    '.aiagent-sdk-msg h2{font-size:1.18em}',
+    '.aiagent-sdk-msg h3{font-size:1.08em}',
+    '.aiagent-sdk-msg h4{font-size:1em}',
+    '.aiagent-sdk-msg ul,.aiagent-sdk-msg ol{margin:.4em 0;padding-left:1.5em}',
+    '.aiagent-sdk-msg li{margin:.15em 0}',
+    '.aiagent-sdk-msg li>p{margin:.15em 0}',
+    '.aiagent-sdk-msg blockquote{border-left:3px solid #d1d5db;padding:2px 10px;margin:.5em 0;color:#6b7280;background:rgba(0,0,0,.02);border-radius:0 4px 4px 0}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg blockquote{border-left-color:#4b5563;background:rgba(255,255,255,.04);color:#9ca3af}',
+    '.aiagent-sdk-msg hr{border:none;border-top:1px solid #e5e7eb;margin:.8em 0}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg hr{border-top-color:#374151}',
+    '.aiagent-sdk-msg pre{background:rgba(0,0,0,.05);border-radius:6px;padding:8px 10px;margin:.5em 0;overflow-x:auto;font-family:ui-monospace,"Cascadia Code",monospace;font-size:12.5px;line-height:1.5;white-space:pre}',
+    '.aiagent-sdk-msg pre code{background:transparent;padding:0;font-size:inherit}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg pre{background:rgba(0,0,0,.35)}',
+    '.aiagent-sdk-msg code{background:rgba(0,0,0,.08);padding:1px 5px;border-radius:3px;font-size:12.5px;font-family:ui-monospace,monospace}',
+    '.aiagent-sdk-msg-assistant code{background:rgba(0,0,0,.06)}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg code{background:rgba(255,255,255,.08)}',
+    '.aiagent-sdk-msg a{color:#3b82f6;text-decoration:underline;word-break:break-all}',
+    '.aiagent-sdk-msg a:hover{color:#2563eb}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg a{color:#93c5fd}',
+    '.aiagent-sdk-msg table{border-collapse:collapse;margin:.5em 0;font-size:12.5px;display:block;overflow-x:auto;max-width:100%}',
+    '.aiagent-sdk-msg th,.aiagent-sdk-msg td{border:1px solid #e5e7eb;padding:4px 8px;text-align:left;vertical-align:top}',
+    '.aiagent-sdk-msg th{background:rgba(0,0,0,.04);font-weight:600}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th{background:rgba(255,255,255,.06)}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th,.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg td{border-color:#374151}',
+    '.aiagent-sdk-msg del{color:#9ca3af;text-decoration:line-through}',
+    '.aiagent-sdk-msg input[type=checkbox]{margin-right:6px}',
+    // ===== 图片:百分比缩放(限制在消息气泡内)+ 加载模糊过渡 =====',
+    '.aiagent-sdk-msg img{max-width:100%;height:auto;border-radius:6px;margin:.4em 0;display:block;cursor:zoom-in;background:rgba(0,0,0,.03)}',
+    '.aiagent-sdk-msg img.aiagent-sdk-img-loading{opacity:.3;filter:blur(6px);transition:opacity .35s,filter .35s}',
+    '.aiagent-sdk-msg img.aiagent-sdk-img-loaded{opacity:1;filter:none;transition:opacity .35s,filter .35s}'
   ].join('');
 
   function injectCss() {
@@ -257,6 +293,10 @@
 
     // 欢迎语
     this._appendMsg('system', this._opts.welcomeMessage);
+
+    // 后台预加载 marked + DOMPurify(不阻塞浮窗出现)
+    // 首次发消息时若还没到,会走 fallback;到了之后下次渲染自动切到完整路径
+    ensureMarkdown();
   };
 
   AIAgent.prototype.toggle = function () {
@@ -299,6 +339,7 @@
         + '<pre>' + escapeHtml(JSON.stringify(data.args, null, 2)) + '</pre>';
     } else {
       div.innerHTML = renderMarkdownLite(text || '');
+      decorateImages(div);
     }
     this._msgEl.appendChild(div);
     this._msgEl.scrollTop = this._msgEl.scrollHeight;
@@ -320,12 +361,167 @@
     });
   }
 
-  // 简单 markdown:换行 + **bold** + `code`
+  // ====================================================================
+  // Markdown 渲染(marked + DOMPurify,带 CDN/本地/降级三段式)
+  // ====================================================================
+
+  /**
+   * 把一个 <script src=...> 标签 append 到 head,resolve 当 onload 触发。
+   * 超时(timeoutMs)未加载完 reject —— 调用方 catch 后继续降级。
+   */
+  function loadScript(src, timeoutMs) {
+    return new Promise(function (resolve, reject) {
+      var s = document.createElement('script');
+      s.src = src;
+      s.async = true;
+      var done = false;
+      var timer = setTimeout(function () {
+        if (done) return;
+        done = true;
+        s.remove();
+        reject(new Error('timeout: ' + src));
+      }, timeoutMs || 5000);
+      s.onload = function () {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve();
+      };
+      s.onerror = function () {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        s.remove();
+        reject(new Error('load fail: ' + src));
+      };
+      document.head.appendChild(s);
+    });
+  }
+
+  // SDK 自身所在的目录(用于本地兜底 vendor 路径)
+  var SDK_BASE = (function () {
+    var scripts = document.querySelectorAll('script[src*="ai-agent-sdk"]');
+    for (var i = 0; i < scripts.length; i++) {
+      var src = scripts[i].getAttribute('src') || '';
+      var m = src.match(/^(.*\/)?ai-agent-sdk/);
+      if (m) return m[1] || '';
+    }
+    return '';
+  })();
+
+  // 加载策略:CDN(jsdelivr)优先 → 失败/超时回退本地 vendor → 仍失败则纯 fallback
+  // 两个 Promise 都缓存,后续 _ensureMarkdown 拿到的是同一个 promise
+  var _mdReady = null;
+  function ensureMarkdown() {
+    if (_mdReady) return _mdReady;
+    if (typeof window === 'undefined') {
+      _mdReady = Promise.resolve(false);
+      return _mdReady;
+    }
+    // 已经存在(比如宿主页面预先引了),不重复加载
+    if (window.marked && window.DOMPurify) {
+      _mdReady = Promise.resolve(true);
+      return _mdReady;
+    }
+    var cdnBase = 'https://cdn.jsdelivr.net/npm/';
+    var cdnMarked = cdnBase + 'marked@13.0.3/marked.min.js';
+    var cdnDomPurify = cdnBase + 'dompurify@3.1.6/dist/purify.min.js';
+    var localMarked = SDK_BASE + 'vendor/marked.min.js';
+    var localDomPurify = SDK_BASE + 'vendor/purify.min.js';
+    _mdReady = loadScript(cdnMarked)
+      .then(function () { return loadScript(cdnDomPurify); })
+      .catch(function (cdnErr) {
+        console.warn('[AIAgent SDK] markdown CDN fail, try local:', cdnErr.message);
+        return loadScript(localMarked)
+          .then(function () { return loadScript(localDomPurify); });
+      })
+      .then(function () {
+        // 标记已配置好
+        if (window.marked && window.DOMPurify) return true;
+        throw new Error('libs missing after load');
+      })
+      .catch(function (e) {
+        console.warn('[AIAgent SDK] markdown lib unavailable, fallback to lite:', e.message);
+        return false;
+      });
+    return _mdReady;
+  }
+
+  // marked + DOMPurify 走的安全处理
+  // 备注:DOMPurify 默认会过滤掉 javascript: 等危险 href —— 整个 <a> 标签会被剥,
+  // 不会"链接降级成 #"。这是最严格的安全行为,我们直接接受,不自己再叠一层白名单
+  // (容易写漏,得不偿失)。这里只补 target/rel 防 tabnabbing。
+  function sanitizeAndDecorate(html) {
+    if (!window.DOMPurify) return html;
+    var clean = window.DOMPurify.sanitize(html, {
+      ADD_ATTR: ['target', 'rel'],
+      // 不放行 <style> / <script> / <iframe> 等,DOMPurify 默认就过滤掉
+    });
+    // 给所有 <a> 强制加 target=_blank rel=noopener(防 tabnabbing)
+    clean = clean.replace(/<a\s+([^>]*?)>/gi, function (m, attrs) {
+      if (!/\btarget\s*=/i.test(attrs)) attrs += ' target="_blank"';
+      if (!/\brel\s*=/i.test(attrs)) attrs += ' rel="noopener noreferrer"';
+      return '<a ' + attrs + '>';
+    });
+    return clean;
+  }
+
+  // 渲染主入口:异步(因为 marked 可能是 lazy 加载)
+  // 调用方 await 它,或者 renderImmediate 走 fallback
+  var _mdConfigured = false;
+  function configureMarked() {
+    if (_mdConfigured || !window.marked) return;
+    _mdConfigured = true;
+    // breaks:true 让单个 \n 也变 <br/>(LLM 流式输出时常合并成一行)
+    window.marked.setOptions({ gfm: true, breaks: true, headerIds: false, mangle: false });
+  }
+
   function renderMarkdownLite(text) {
+    if (!text) return '';
+    // 路径 A:marked + DOMPurify(功能完整,GFM + 图片 + 链接 + 表格 + 任务列表)
+    if (typeof window !== 'undefined' && window.marked && window.DOMPurify) {
+      configureMarked();
+      try {
+        var raw = window.marked.parse(text);
+        return sanitizeAndDecorate(raw);
+      } catch (e) {
+        console.warn('[AIAgent SDK] marked parse failed, fallback:', e);
+        return renderMarkdownFallback(text);
+      }
+    }
+    // 路径 B:库还没就绪(或加载失败)→ 降级到自实现(只有换行 + bold + code)
+    return renderMarkdownFallback(text);
+  }
+
+  // 自实现 fallback(约 30 行,库加载失败时用,聊胜于无)
+  function renderMarkdownFallback(text) {
     var t = escapeHtml(text);
-    t = t.replace(/`([^`]+)`/g, '<code>$1</code>');
-    t = t.replace(/\*\*([^*]+)\*\*/g, '<b>$1</b>');
+    t = t.replace(/`([^`\n]+)`/g, '<code>$1</code>');
+    t = t.replace(/\*\*([^*\n]+)\*\*/g, '<strong>$1</strong>');
+    t = t.replace(/\n/g, '<br/>');
     return t;
+  }
+
+  /**
+   * 把已经 innerHTML 完的消息 div 里的 <img> 元素挂上"懒加载 + 模糊过渡"行为。
+   * - 加 loading="lazy"(浏览器原生懒加载,长对话时只渲染可见的)
+   * - 给所有 img 加 aiagent-sdk-img-loading 初始 class
+   * - 监听 onload / onerror 切到 loaded class(从 blur 6px → 清晰)
+   */
+  function decorateImages(container) {
+    if (!container) return;
+    var imgs = container.querySelectorAll('img');
+    for (var i = 0; i < imgs.length; i++) {
+      (function (img) {
+        if (img.dataset.aiagentDecorated === '1') return;
+        img.dataset.aiagentDecorated = '1';
+        img.setAttribute('loading', 'lazy');
+        img.classList.add('aiagent-sdk-img-loading');
+        function done() { img.classList.remove('aiagent-sdk-img-loading'); img.classList.add('aiagent-sdk-img-loaded'); }
+        if (img.complete && img.naturalWidth > 0) done();
+        else { img.addEventListener('load', done, { once: true }); img.addEventListener('error', done, { once: true }); }
+      })(imgs[i]);
+    }
   }
 
   // ====================================================================
@@ -387,12 +583,14 @@
         assistantBuf += (ev.data || '');
         upgradeTyping();
         typing.innerHTML = renderMarkdownLite(assistantBuf);
+        decorateImages(typing);
         self._msgEl.scrollTop = self._msgEl.scrollHeight;
       },
       onDone: function () {
         upgradeTyping();
         // **不**再 append 新 div —— typing 已经是最终内容
         typing.innerHTML = renderMarkdownLite(assistantBuf);
+        decorateImages(typing);
         self._msgEl.scrollTop = self._msgEl.scrollHeight;
         self._setBusy(false);
       },
