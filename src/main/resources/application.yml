@@ -27,6 +27,7 @@ agentscope:
     api-key: ${ANTHROPIC_API_KEY:}
     model-name: MiniMax-M3
     base-url: https://api.minimaxi.com/anthropic
+    enable: true
   session:
     storage-dir: ${user.home}/.agentscope/sessions
   agent:

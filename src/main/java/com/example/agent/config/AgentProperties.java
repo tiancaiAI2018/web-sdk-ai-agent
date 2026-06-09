@@ -8,6 +8,7 @@ import org.springframework.context.annotation.Configuration;
 public class AgentProperties {
 
     private Anthropic anthropic = new Anthropic();
+    private OpenAi openai = new OpenAi();
     private Session session = new Session();
     private Agent agent = new Agent();
 
@@ -18,7 +19,30 @@ public class AgentProperties {
     public Agent getAgent() { return agent; }
     public void setAgent(Agent agent) { this.agent = agent; }
 
+    public OpenAi getOpenai() { return openai; }
+
+    public void setOpenai(OpenAi openai) { this.openai = openai; }
+
     public static class Anthropic {
+        /** API key. Leave empty to read from ANTHROPIC_API_KEY env var. */
+        private String apiKey;
+        /** Model name passed to the Anthropic-compatible endpoint. */
+        private String modelName = "MiniMax-M3";
+        /**
+         * Full base URL of the Anthropic-compatible gateway, including any
+         * path prefix (e.g. https://api.minimaxi.com/anthropic).
+         */
+        private String baseUrl = "https://api.minimaxi.com/anthropic";
+
+        public String getApiKey() { return apiKey; }
+        public void setApiKey(String apiKey) { this.apiKey = apiKey; }
+        public String getModelName() { return modelName; }
+        public void setModelName(String modelName) { this.modelName = modelName; }
+        public String getBaseUrl() { return baseUrl; }
+        public void setBaseUrl(String baseUrl) { this.baseUrl = baseUrl; }
+    }
+
+    public static class OpenAi {
         /** API key. Leave empty to read from ANTHROPIC_API_KEY env var. */
         private String apiKey;
         /** Model name passed to the Anthropic-compatible endpoint. */

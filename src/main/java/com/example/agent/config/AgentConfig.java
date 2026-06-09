@@ -2,9 +2,13 @@ package com.example.agent.config;
 
 import io.agentscope.core.model.AnthropicChatModel;
 import io.agentscope.core.model.ChatModelBase;
+import io.agentscope.core.model.OpenAIChatModel;
 import io.agentscope.core.session.JsonSession;
 import io.agentscope.core.session.Session;
 import jakarta.annotation.PostConstruct;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 import org.springframework.context.annotation.Bean;
 import org.springframework.context.annotation.Configuration;
 
@@ -13,6 +17,7 @@ import java.nio.file.Paths;
 
 @Configuration
 public class AgentConfig {
+    private static final Logger LOGGER = LoggerFactory.getLogger(AgentConfig.class);
 
     private final AgentProperties props;
 
@@ -26,14 +31,31 @@ public class AgentConfig {
      * the ANTHROPIC_API_KEY env var as a fallback.
      */
     @Bean
-    public ChatModelBase chatModel() {
-        String apiKey = resolveApiKey();
+    @ConditionalOnProperty(name = "agentscope.anthropic.enable", havingValue = "true")
+    public ChatModelBase anthropicChatModel() {
+        String apiKey = resolveApiKey(props.getAnthropic().getApiKey());
+        LOGGER.info("[AgentConfig] AnthropicChatModel: apiKey={}, modelName={}, baseUrl={}",
+            apiKey, props.getAnthropic().getModelName(), props.getAnthropic().getBaseUrl());
         return AnthropicChatModel.builder()
             .apiKey(apiKey)
             .modelName(props.getAnthropic().getModelName())
             .baseUrl(props.getAnthropic().getBaseUrl())
             // stream defaults to true on AnthropicChatModel — no need to set it
             .build();
+    }
+
+    @Bean
+    @ConditionalOnProperty(name = "agentscope.openai.enable", havingValue = "true")
+    public ChatModelBase openaiChatModel() {
+        String apiKey = resolveApiKey(props.getOpenai().getApiKey());
+        LOGGER.info("[AgentConfig] OpenAIChatModel: apiKey={}, modelName={}, baseUrl={}",
+            apiKey, props.getOpenai().getModelName(), props.getOpenai().getBaseUrl());
+        return OpenAIChatModel.builder()
+                .apiKey(apiKey)
+                .modelName(props.getOpenai().getModelName())
+                .baseUrl(props.getOpenai().getBaseUrl())
+                // stream defaults to true on AnthropicChatModel — no need to set it
+                .build();
     }
 
     /**
@@ -46,18 +68,7 @@ public class AgentConfig {
         return new JsonSession(storage);
     }
 
-    @PostConstruct
-    void logBanner() {
-        System.out.printf(
-            "[AgentConfig] provider=anthropic, model=%s, baseUrl=%s, sessionStorage=%s, agentName=%s%n",
-            props.getAnthropic().getModelName(),
-            props.getAnthropic().getBaseUrl(),
-            props.getSession().getStorageDir(),
-            props.getAgent().getName());
-    }
-
-    private String resolveApiKey() {
-        String key = props.getAnthropic().getApiKey();
+    private String resolveApiKey(String key) {
         if (key != null && !key.isBlank()) {
             return key;
         }
