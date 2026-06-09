@@ -3,8 +3,11 @@ package com.example.agent.controller;
 import com.example.agent.audit.AuditService;
 import com.example.agent.auth.AuthPrincipal;
 import com.example.agent.session.SessionManager;
+import com.fasterxml.jackson.core.JsonProcessingException;
+import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.ToolUseBlock;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
@@ -21,15 +24,21 @@ import org.springframework.web.server.ServerWebExchange;
 import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
+import java.nio.charset.StandardCharsets;
+import java.security.MessageDigest;
+import java.security.NoSuchAlgorithmException;
+import java.util.HexFormat;
+import java.util.List;
+import java.util.Map;
+
 /**
  * Two endpoints:
  *   POST /chat/{sessionId}         blocking, returns full response
- *   GET  /chat/{sessionId}/stream SSE stream of incremental deltas
+ *   POST /chat/{sessionId}/stream  SSE stream of incremental deltas
  *
- * The sessionId in the URL is also the JsonSession key. It is sanitized
- * inside SessionManager (see session.md security note).
- *
- * Auth: JwtAuthFilter 已在校验前把 AuthPrincipal 挂到 exchange,这里只读。
+ * v3 重构:body 不再带 schema,改带 {@code activeTools: ["name1", "name2"]}。
+ * 工具 schema 在 SDK 端用 POST /chat/{sid}/tools/register 单独注入,绑定到 sid。
+ * activeTools 为空/null = 纯聊天(不挂任何 tool)。
  */
 @RestController
 @RequestMapping("/chat")
@@ -39,6 +48,7 @@ public class ChatController {
 
     private final SessionManager sessions;
     private final AuditService audit;
+    private final ObjectMapper mapper = new ObjectMapper();
 
     public ChatController(SessionManager sessions, AuditService audit) {
         this.sessions = sessions;
@@ -48,7 +58,8 @@ public class ChatController {
     /** Blocking request/response. */
     @PostMapping("/{sessionId}")
     @Operation(summary = "阻塞对话",
-        description = "一次性返回完整 reply(JSON)。sessionId 必须以 {clientId}: 开头。")
+        description = "一次性返回完整 reply(JSON)。sessionId 必须以 {clientId}: 开头。"
+                   + "v3:body 可选传 activeTools 激活已注册的工具。")
     public Mono<ChatResponse> chat(@PathVariable String sessionId,
                                    @RequestBody ChatRequest body,
                                    ServerWebExchange exchange) {
@@ -57,7 +68,8 @@ public class ChatController {
         }
         AuthPrincipal p = principalOf(exchange);
         String ip = AuditService.extractIp(exchange.getRequest());
-        audit.logChatStart(p.clientId(), p.jti(), sessionId, ip);
+        List<String> active = body.activeTools() == null ? List.of() : body.activeTools();
+        audit.logChatStart(p.clientId(), p.jti(), sessionId, active, ip);
         return sessions.call(sessionId, body.message())
             .map(resp -> {
                 audit.logChatDone(p.clientId(), p.jti(), sessionId, ip);
@@ -71,56 +83,134 @@ public class ChatController {
      * SSE stream. Each frame is one Event from the agent — incremental
      * reasoning deltas by default. The last reasoning frame has isLast=true.
      *
-     * Heartbeat every 15s so proxies do not close the connection while
-     * the model is still working.
+     * <p>v3:当 body.activeTools 非空且模型调用了已注册工具时,会多发一个
+     * {@code event: tool_call} 帧,data 是 {@code {"tool":"name","args":{...}}},
+     * 浏览器 SDK 解析后调 onCall 回调。
      */
     @PostMapping(value = "/{sessionId}/stream", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
-    @Operation(summary = "SSE 流式对话",
+    @Operation(summary = "SSE 流式对话 / 激活工具",
         description = "text/event-stream。sessionId 必须以 {clientId}: 开头。"
-                   + "SDK 端按 SSE 帧解析,每帧是 AgentScope Event,最后一帧 id=last 表示流结束。")
+                   + "body.activeTools 列出本次想激活的工具名(必须已通过 /tools/register 注册);"
+                   + "不传或空 = 纯聊天。")
     public Flux<ServerSentEvent<String>> stream(@PathVariable String sessionId,
                                                 @RequestBody ChatRequest body,
                                                 ServerWebExchange exchange) {
-        // 消息必须在 body 里(HTTP header 是 ISO-8859-1,装不下中文/emoji)。
         if (body == null || body.message() == null || body.message().isBlank()) {
             return Flux.error(new IllegalArgumentException("message must not be blank"));
         }
         AuthPrincipal p = principalOf(exchange);
         String ip = AuditService.extractIp(exchange.getRequest());
-        audit.logChatStart(p.clientId(), p.jti(), sessionId, ip);
+        List<String> active = body.activeTools() == null ? List.of() : body.activeTools();
+        audit.logChatStart(p.clientId(), p.jti(), sessionId, active, ip);
 
-        return sessions.stream(sessionId, body.message())
-            .map(ChatController::toSse)
+        // AgentScope 1.0.12 在流末尾会推多个 isLast=true 的 Event。last 帧只推一次。
+        java.util.concurrent.atomic.AtomicBoolean lastEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+
+        return sessions.stream(sessionId, body.message(), active)
+            .flatMap(event -> toSse(event, p, sessionId, ip, lastEmitted))
             .doOnComplete(() -> audit.logChatDone(p.clientId(), p.jti(), sessionId, ip));
     }
 
-    private static ServerSentEvent<String> toSse(Event event) {
+    /**
+     * 把单个 AgentScope Event 翻译成 1~N 个 SSE 帧。工具调用时**额外**推一个
+     * event: tool_call 帧,data 含 tool 名 + args(JSON)。
+     *
+     * @param lastEmitted 整个流里 id:last 帧只能推一次
+     */
+    private Flux<ServerSentEvent<String>> toSse(Event event, AuthPrincipal p,
+                                                String sessionId, String ip,
+                                                java.util.concurrent.atomic.AtomicBoolean lastEmitted) {
         Msg msg = event.getMessage();
         String text = msg == null || msg.getTextContent() == null ? "" : msg.getTextContent();
-        return ServerSentEvent.<String>builder()
-            .event(event.getType().name().toLowerCase())
-            .id(event.isLast() ? "last" : null)
-            .data(text)
+
+        // isLast 帧去重:AgentScope 1.0.12 会在流末尾推多个 isLast=true,只让第一个推 id:last
+        boolean isLastForReal = event.isLast() && lastEmitted.compareAndSet(false, true);
+        if (event.isLast() && !isLastForReal) {
+            return Flux.empty();
+        }
+
+        String type = event.getType().name().toLowerCase();
+        ServerSentEvent<String> main = ServerSentEvent.<String>builder()
+            .event(type)
+            .id(isLastForReal ? "last" : null)
+            // 把 data 内的换行转义成 \\n(字符串),避免 Spring WebFlux 把多行 data
+            // 拆成多个 data: 字段,前端 SSE 解析更简单可靠。前端拿到后用 .replace(/\\n/g, '\n') 还原
+            .data(text == null ? "" : text.replace("\n", "\\n").replace("\r", ""))
             .build();
+
+        if (msg == null) return Flux.just(main);
+        List<ToolUseBlock> toolUses;
+        try {
+            toolUses = msg.getContentBlocks(ToolUseBlock.class);
+        } catch (Exception e) {
+            return Flux.just(main);
+        }
+        if (toolUses == null || toolUses.isEmpty()) return Flux.just(main);
+
+        // 一次只取第一个(录单场景模型一次只调一个工具)
+        ToolUseBlock tu = toolUses.get(0);
+        // 过滤 AgentScope 内部工具(以 __ 开头,流式 JSON 分片用)
+        if (tu.getName() != null && tu.getName().startsWith("__")) {
+            return Flux.just(main);
+        }
+        String argsJson;
+        try {
+            argsJson = mapper.writeValueAsString(tu.getInput());
+        } catch (JsonProcessingException e) {
+            argsJson = "{}";
+        }
+        String data = "{\"tool\":\"" + tu.getName() + "\",\"args\":" + argsJson + "}";
+
+        // audit(只存 hash,不存原文)
+        String argsHash = sha256Short(argsJson);
+        try {
+            audit.logFormSubmit(p.clientId(), p.jti(), sessionId, tu.getName(), argsHash, ip);
+        } catch (Exception ignored) {}
+
+        ServerSentEvent<String> toolCall = ServerSentEvent.<String>builder()
+            .event("tool_call")
+            .data(data)
+            .build();
+        return Flux.just(main, toolCall);
+    }
+
+    private static String sha256Short(String s) {
+        try {
+            MessageDigest md = MessageDigest.getInstance("SHA-256");
+            byte[] d = md.digest(s.getBytes(StandardCharsets.UTF_8));
+            return HexFormat.of().formatHex(d, 0, 6);
+        } catch (NoSuchAlgorithmException e) {
+            return "0";
+        }
     }
 
     private static AuthPrincipal principalOf(ServerWebExchange exchange) {
         AuthPrincipal p = exchange.getAttribute(AuthPrincipal.ATTR);
-        // JwtAuthFilter 已经把无效请求挡掉了;走到这里 principal 一定存在。
         if (p == null) {
             throw new IllegalStateException("AuthPrincipal missing — JwtAuthFilter did not run?");
         }
         return p;
     }
 
-    public record ChatRequest(String message) {}
+    /**
+     * v3:body 可选带 activeTools(已通过 /tools/register 注册的工具名列表)。
+     * null/空 = 纯聊天。
+     */
+    public record ChatRequest(String message, List<String> activeTools) {
+        public ChatRequest {
+            if (activeTools == null) activeTools = List.of();
+        }
+    }
     public record ChatResponse(String sessionId, String reply) {}
 
-    /** 把 sanitize / 业务校验抛的 IAE 翻成 400(默认会 500)。 */
     @ExceptionHandler(IllegalArgumentException.class)
-    public Mono<ResponseEntity<java.util.Map<String, String>>> handleBadInput(IllegalArgumentException e) {
+    public Mono<ResponseEntity<Map<String, String>>> handleBadInput(IllegalArgumentException e) {
+        String msg = e.getMessage() == null ? "" : e.getMessage();
+        String err = "bad_request";
+        if (msg.startsWith("tool_not_registered")) err = "tool_not_registered";
+        else if (msg.startsWith("description rejected")) err = "description_rejected";
+        else if (msg.startsWith("description too long")) err = "description_too_long";
         return Mono.just(ResponseEntity.badRequest()
-            .body(java.util.Map.of("error", "bad_request", "message",
-                e.getMessage() == null ? "" : e.getMessage())));
+            .body(Map.of("error", err, "message", msg)));
     }
 }

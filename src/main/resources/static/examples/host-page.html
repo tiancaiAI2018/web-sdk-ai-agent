@@ -2,87 +2,110 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>AIAgent SDK 第三方接入 demo (v2)</title>
+  <title>第三方页面接入 AI Agent demo (v3 浮窗版)</title>
   <style>
     body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
-    #out { white-space: pre-wrap; border: 1px solid #ddd; padding: 12px; min-height: 80px; border-radius: 4px; background: #fafafa; }
-    input, button { font: inherit; padding: 6px 10px; }
-    .row { display: flex; gap: 8px; margin: 12px 0; }
-    input[type=text] { flex: 1; }
-    .meta { color: #888; font-size: 12px; }
-    #sid { font-family: ui-monospace, "Cascadia Code", monospace; }
+    h1 { color: #1f2937; }
+    .form-area { padding: 16px; background: #f3f4f6; border-radius: 8px; margin: 16px 0; }
+    .form-grid { display: grid; grid-template-columns: 100px 1fr; gap: 8px; }
+    .form-grid label { padding: 6px 0; color: #444; font-size: 14px; }
+    .form-grid input { border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 10px; font: inherit; }
+    .filled { background: #d1fae5 !important; transition: background 0.6s; }
+    code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; }
   </style>
 </head>
 <body>
-  <h2>第三方网页接入 AI Agent demo (v2)</h2>
+  <h1>第三方页面 demo (v3)</h1>
   <p>
-    流程:浏览器 → 第三方 mock 后端 (7000) → AI Agent (8080)。<br>
-    <strong>secret 永远不离开第三方后端 ↔ AI Agent 之间</strong>。
-  </p>
-  <p class="meta">当前会话:<code id="sid">未开始</code>
-    <button id="new" style="padding: 2px 8px; font-size: 12px;">开新会话</button>
+    本页面演示 <strong>浮窗机器人 SDK</strong> 的接入流程。右下角的 🤖 气泡就是 SDK 自动渲染的 UI —— <em>本页面没写一行聊天框 DOM</em>。
   </p>
 
-  <div class="row">
-    <input id="msg" type="text" value="用一句话介绍你自己" />
-    <button id="send">发送</button>
+  <div class="form-area">
+    <h3>订单录入区(SDK 智能录单会把字段填到这里)</h3>
+    <div class="form-grid">
+      <label>订单号</label>   <input id="f-orderId"       data-field="orderId" />
+      <label>客户姓名</label> <input id="f-customerName"  data-field="customerName" />
+      <label>联系电话</label> <input id="f-customerPhone" data-field="customerPhone" />
+      <label>商品清单</label> <input id="f-items"         data-field="items" />
+      <label>总金额</label>   <input id="f-totalAmount"   data-field="totalAmount" />
+      <label>备注</label>     <input id="f-notes"         data-field="notes" />
+    </div>
   </div>
-  <div id="out"></div>
-  <div id="status" class="meta"></div>
+
+  <h3>接入代码(3 行)</h3>
+  <pre><code>&lt;script src="http://your-host/sdk/ai-agent-sdk.js"&gt;&lt;/script&gt;
+&lt;script&gt;
+  const agent = AIAgent.init({
+    endpoint: 'http://localhost:8080',
+    getAccessToken: async () =&gt; {
+      const r = await fetch('http://localhost:7000/api/ai-token', { method: 'POST' });
+      return await r.json();   // { accessToken, refreshToken }
+    }
+  });
+&lt;/script&gt;</code></pre>
+
+  <h3>智能录单触发(本页面另加)</h3>
+  <button id="trigger-extract">点我开启智能录单</button>
+  <p class="meta" style="color:#6b7280;font-size:13px">点开后,SDK 浮窗内会进入录单模式,跟用户多轮对话,凑齐字段后调 submit_form 工具,把字段值回填到上方表单。</p>
 
   <script src="http://localhost:8080/sdk/ai-agent-sdk.js"></script>
   <script>
-    var out = document.getElementById('out');
-    var status = document.getElementById('status');
-    var sidEl = document.getElementById('sid');
-    var btn = document.getElementById('send');
-    var newBtn = document.getElementById('new');
-    var input = document.getElementById('msg');
-
-    // 会话 ID 持久化在页面生命周期内,首次点击才生成。
-    // 点"开新会话"才重置,实现多轮对话。
-    var currentSid = null;
-    function ensureSid() {
-      if (!currentSid) {
-        // 形如 demo-app:user-{ts},必须以 {clientId}: 开头
-        currentSid = 'demo-app:user-' + Date.now();
-        sidEl.textContent = currentSid;
-      }
-      return currentSid;
-    }
-    newBtn.addEventListener('click', function () {
-      currentSid = null;
-      sidEl.textContent = '未开始';
-      out.textContent = '';
-      status.textContent = '';
-      input.focus();
-    });
-
+    // ===== 1. 浮窗 SDK 初始化(3 行接入) =====
     var agent = AIAgent.init({
       endpoint: 'http://localhost:8080',
-      // v2 关键:浏览器不持 secret,只调第三方自家后端换 token
       getAccessToken: async function () {
         var r = await fetch('http://localhost:7000/api/ai-token', { method: 'POST' });
         if (!r.ok) throw new Error('mock 后端换 token 失败: ' + r.status);
-        var j = await r.json();
-        return { accessToken: j.accessToken, refreshToken: j.refreshToken };
-      }
+        return await r.json();
+      },
+      title: 'AI 助手',
+      subtitle: '点我开始聊天',
+      welcomeMessage: '你好!我是 AI 助手,可以直接跟我聊天,或者点浮窗右上角 📋 按钮开启"录单模式",我会把字段值回填到上方订单表单。',
+      placeholder: '输入消息,Enter 发送,Shift+Enter 换行',
+      theme: 'light',
+      position: 'bottom-right',
+      clientPrefix: 'demo-app',
+      // v3:SDK 内部自动注册一组"submit_form"工具 + 浮窗出现 📋 录单按钮
+      demoTools: true,
+      // 自定义 submit_form 的 schema(可选;不传则用 SDK 默认)
+      demoOrderTools: [{
+        name: 'submit_form',
+        description: 'Submit collected order fields. Call only when all required fields are confirmed.',
+        parameters: {
+          type: 'object',
+          properties: {
+            orderId:       { type: 'string',  description: '订单编号' },
+            customerName:  { type: 'string',  description: '客户全名' },
+            customerPhone: { type: 'string',  description: '11 位手机号' },
+            items:         { type: 'string',  description: '商品清单,简短文字描述' },
+            totalAmount:   { type: 'number',  description: '订单总金额,数字,单位元' },
+            notes:         { type: 'string',  description: '其他备注' }
+          },
+          required: ['orderId', 'customerName', 'items', 'totalAmount']
+        },
+        strict: true,
+        // v3:tool_call 时 SDK 端调的回调 —— 本 demo 把字段回填到上方表单
+        onCall: function (payload) {
+          Object.keys(payload).forEach(function (k) {
+            var el = document.querySelector('[data-field="' + k + '"]');
+            if (el) {
+              el.value = payload[k];
+              el.classList.add('filled');
+              setTimeout(function () { el.classList.remove('filled'); }, 1500);
+            }
+          });
+        }
+      }]
     });
 
-    btn.addEventListener('click', function () {
-      var sid = ensureSid();
-      status.textContent = 'requesting... (session ' + sid + ')';
-      agent.stream({
-        sessionId: sid,
-        message: input.value,
-        onChunk: function (ev) { out.append(ev.data || ''); },
-        onDone:  function ()   { status.textContent = 'done (session ' + sid + ')'; },
-        onError: function (e)  { status.textContent = 'error: ' + e.message; }
+    // ===== 2. 备用:用 SDK API 显式启动录单(页面"开启录单"按钮) =====
+    // demoTools=true 时浮窗已自带 📋 按钮,这个是给"想用 page-level 触发"的第三方示例
+    document.getElementById('trigger-extract').addEventListener('click', function () {
+      agent.open();
+      // 直接传 tools(SDK 会自动调 registerTools)
+      agent.startExtractSession({
+        tools: agent._opts.demoOrderTools  // 复用 init 时声明的工具定义
       });
-    });
-
-    input.addEventListener('keydown', function (e) {
-      if (e.key === 'Enter') btn.click();
     });
   </script>
 </body>
