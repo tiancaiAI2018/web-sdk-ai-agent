@@ -6,6 +6,7 @@ import com.example.agent.extract.NoPendingToolException;
 import com.example.agent.extract.StreamBlockedException;
 import com.example.agent.extract.ToolRegistry;
 import com.example.agent.extract.ToolSchemaFactory;
+import com.example.agent.extract.ToolUseIdMismatchException;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.StreamOptions;
@@ -173,6 +174,15 @@ public class SessionManager {
                 // AgentScope 触 TOOL_SUSPENDED 时,ToolUseBlock 可能在中间事件上,
                 // 也可能在最后的 isLast 帧上 —— 扫**所有**事件,任何一条带
                 // 非内部 ToolUseBlock 就标 suspended。
+                //
+                // **关键**:把 agent 放入 suspendedAgents 必须在 doOnNext 阶段完成,
+                // 而**不是** doOnComplete。doOnNext 是 flatMap 的上游,其副作用一定
+                // 先于该事件的 SSE 帧被 Spring 写入 response。SDK reader 一拿到
+                // `event: tool_call` 帧就 fire-and-forget 触发 onCall;若 onCall 极快
+                // (host-page demo 的同步 onCall 几 ms 就 return),POST /tools/result
+                // 可能在后端 agent.stream() signal onComplete 之前到达 —— 此时
+                // resume() 读 suspendedAgents 还是 null,误报 409 no_pending_tool_call。
+                // putIfAbsent 幂等:多次扫到同一个 tool_use 不会覆盖。
                 Msg m = event.getMessage();
                 if (m == null) return;
                 List<ToolUseBlock> tus;
@@ -186,21 +196,36 @@ public class SessionManager {
                     if (tu.getName() == null || tu.getName().startsWith("__")) continue;
                     pendingId.set(tu.getId());
                     pendingName.set(tu.getName());
+                    if (suspendedAgents.putIfAbsent(safe, agent) == null) {
+                        log.debug("Session {} suspended on tool {} ({}); awaiting /tools/result",
+                            safe, tu.getName(), tu.getId());
+                    }
                     suspended.set(true);
-                    log.debug("Session {} detected TOOL_SUSPENDED on tool {} ({})",
-                        safe, tu.getName(), tu.getId());
                     return;  // 只记第一个
                 }
             })
             .doOnComplete(() -> {
                 if (suspended.get()) {
-                    // 挂起:agent 留在内存,等 /tools/result 来喂结果;不 saveTo
-                    suspendedAgents.put(safe, agent);
-                    log.debug("Session {} suspended on tool {} ({}); awaiting /tools/result",
+                    // doOnNext 阶段已放 suspendedAgents,这里只确认 + 记日志
+                    log.debug("Session {} stream complete (suspended on tool {} ({}))",
                         safe, pendingName.get(), pendingId.get());
                 } else {
+                    // 正常完成:无工具调用,持久化
                     agent.saveTo(session, safe);
                     log.debug("Session {} saved (stream complete)", safe);
+                }
+            })
+            .doOnError(err -> {
+                // LLM 5xx / 网络中断 / 中途异常。
+                // 若已挂起(tool_use 已 emit 但 stream error),保留在 suspendedAgents
+                // —— resume() 的 doOnError 仍会清;且 /tools/result 可能仍想尝试喂结果。
+                // 若未挂起,evict 这个半成品 agent。
+                if (suspended.get()) {
+                    log.warn("Session {} stream error after suspend, agent stays suspended: {}",
+                        safe, err.toString());
+                } else {
+                    agents.remove(safe);
+                    log.warn("Session {} stream error, agent evicted: {}", safe, err.toString());
                 }
             });
     }
@@ -219,13 +244,30 @@ public class SessionManager {
                 safe, safe, toolUseId);
             return Flux.error(new NoPendingToolException(safe));
         }
-        // 从 memory 里找对应的 tool name(用 id 反查)
+
+        // 让 resume() 这次活动刷 ToolRegistry lastUsedAt,避免 30 min TTL
+        // 在 TOOL_SUSPENDED 期间把已挂起但用户停留很久的 session 误清。
+        toolRegistry.touch(safe, List.of());
+
+        // 校验 toolUseId 真在 memory 里。挂起中但 id 错配(SDK 用过期 id 重试、
+        // sid 错配、stale SSE 帧)→ 报 409 mismatch,而不是塞 "external_tool"
+        // 喂 LLM 让它收到一个"它没发出过"的 tool result 后乱回。
+        boolean idMatches = agent.getMemory().getMessages().stream()
+            .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
+            .anyMatch(u -> toolUseId.equals(u.getId()));
+        if (!idMatches) {
+            log.warn("Session {} resume failed: toolUseId {} not in suspended memory",
+                safe, toolUseId);
+            return Flux.error(new ToolUseIdMismatchException(safe, toolUseId));
+        }
+
+        // 校验通过 → 反查 toolName(必命中,不再 orElse("external_tool") 兜底)
         String toolName = agent.getMemory().getMessages().stream()
             .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
             .filter(u -> toolUseId.equals(u.getId()))
             .map(ToolUseBlock::getName)
             .findFirst()
-            .orElse("external_tool");
+            .orElseThrow();   // 上面已校验存在,这里必不抛
 
         Msg toolResult = Msg.builder()
             .role(MsgRole.TOOL)
@@ -235,12 +277,37 @@ public class SessionManager {
 
         log.debug("Session {} resuming with tool result ({} bytes)", safe,
             resultText == null ? 0 : resultText.length());
-        return agent.stream(List.of(toolResult), StreamOptions.defaults())
+        // 关键 race:SDK 同步 onCall 极快(host-page demo 就这场景),POST /tools/result
+        // 可能在后端上一条 stream 的 doOnComplete 跑完后**立即**到达,而 AgentScope
+        // 内部的 isRunning 标志由 Spring WebFlux 清理 subscriber 时**异步**清除,
+        // 比 doOnComplete 晚几 ms 到几十 ms。此时 agent.stream() 抛
+        // IllegalStateException("Agent is still running") → 500。
+        // 用 Flux.defer + retryWhen 做短暂重试(3 × 50ms = 最多 150ms),
+        // 避开这个窗口。其他错误照旧不重试。
+        return Flux.<Event>defer(() -> {
+                    try {
+                        return agent.stream(List.of(toolResult), StreamOptions.defaults());
+                    } catch (IllegalStateException e) {
+                        // 把同步抛转成 Flux.error,让 retryWhen 接住
+                        return Flux.error(e);
+                    }
+                })
+                .retryWhen(reactor.util.retry.Retry.fixedDelay(3, java.time.Duration.ofMillis(50))
+                    .filter(t -> t instanceof IllegalStateException
+                        && t.getMessage() != null
+                        && t.getMessage().contains("Agent is still running")))
             .doOnComplete(() -> {
                 // 完成后移出挂起池 + saveTo(此时 memory 已含 tool result,完整)
                 suspendedAgents.remove(safe);
                 agent.saveTo(session, safe);
                 log.debug("Session {} resumed and saved", safe);
+            })
+            .doOnError(err -> {
+                // LLM 5xx / 中断:tool result 已喂入 memory 但 LLM 没消化,save 会留半配对。
+                // 移出挂起池 + evict,让下次 stream 从干净状态开始。
+                suspendedAgents.remove(safe);
+                agents.remove(safe);
+                log.warn("Session {} resume error, evicted: {}", safe, err.toString());
             });
     }
 
@@ -254,6 +321,25 @@ public class SessionManager {
         // 同步清挂起池(浏览器关掉、SDK 永远不会再调 /tools/result)
         ReActAgent suspended = suspendedAgents.remove(sessionId);
         if (suspended != null) log.debug("Session {} suspended agent evicted (TTL)", sessionId);
+    }
+
+    /**
+     * SDK 调 /tools/abort:释放挂起中的 agent(用户取消 / SDK 重试失败后放弃 /
+     * 页面关闭)。不 saveTo —— memory 含半配对 ToolUseBlock,持久化反而会让下次
+     * loadIfExists 触发 ReActAgent.doCall 的 IllegalStateException。
+     *
+     * @return 此前是否真在挂起池(false = idle,abort 是幂等 no-op)
+     */
+    public boolean abort(String sessionId) {
+        String safe = sanitize(sessionId);
+        ReActAgent suspended = suspendedAgents.remove(safe);
+        if (suspended != null) {
+            // 同步清 agents map 里那条引用,避免内存涨
+            agents.remove(safe);
+            log.debug("Session {} aborted (was suspended)", safe);
+            return true;
+        }
+        return false;
     }
 
     @PreDestroy

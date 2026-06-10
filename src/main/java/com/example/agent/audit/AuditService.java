@@ -112,6 +112,17 @@ public class AuditService {
         repo.save(AuditLog.of("TOOL_RESULT", clientId, sessionId, jti, ip, detail));
     }
 
+    /**
+     * v3+:SDK 调 /tools/abort 释放挂起的 agent(用户取消 / 重试失败后放弃 / 页面关闭)。
+     * @param wasSuspended 后端此前是否真在挂起池(false 表示 idle,abort 是幂等 no-op)
+     */
+    @Transactional
+    public void logToolAbort(String clientId, String jti, String sessionId,
+                             boolean wasSuspended, String ip) {
+        String detail = "wasSuspended=" + wasSuspended;
+        repo.save(AuditLog.of("TOOL_ABORT", clientId, sessionId, jti, ip, detail));
+    }
+
     /** 从 WebFlux ServerHttpRequest 提 IP(优先 X-Forwarded-For,再退回 remoteAddress)。 */
     public static String extractIp(ServerHttpRequest req) {
         if (req == null) return null;

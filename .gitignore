@@ -37,8 +37,14 @@ cp.txt
 dependency-reduced-pom.xml
 
 # Reference docs and Claude Code state — keep these out of the project repo
+# (agentscope_docs_v2/ is intentionally NOT ignored — v2 文档归档进仓库)
 agentscope-java-docs/
 .claude/
+
+# v2 draft code (AgentScope 2.0.0-RC2 not stable yet; kept on disk for
+# future upgrade reference, but excluded from the v1 build tree so it
+# can never be picked up by maven scanning or pollute classpath).
+src/main/java/io/
 
 # H2 local database — regenerable
 data/

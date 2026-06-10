@@ -123,6 +123,28 @@ public class ToolRegistry {
         return touchAll(picked, inner);
     }
 
+    /**
+     * 仅刷新 lastUsedAt,不返回工具实例。供 {@code SessionManager.resume()} 调用,
+     * 让"提交工具结果"也算活动,ToolRegistry TTL 不会在 TOOL_SUSPENDED 期间被误清。
+     *
+     * <p>Best-effort:sid 不存在或 names 全未注册都静默返回,不抛错 —— resume() 时
+     * 已有 toolUseId,memory 反查是真实判据,这里不阻断流。
+     */
+    public void touch(String sid, List<String> names) {
+        ConcurrentHashMap<String, RegisteredTool> inner = store.get(sid);
+        if (inner == null) return;
+        if (names == null || names.isEmpty()) {
+            touchAll(inner.values().stream().toList(), inner);
+            return;
+        }
+        List<RegisteredTool> picked = new ArrayList<>();
+        for (String n : names) {
+            RegisteredTool t = inner.get(n);
+            if (t != null) picked.add(t);
+        }
+        if (!picked.isEmpty()) touchAll(picked, inner);
+    }
+
     /** 刷新 lastUsedAt 并写回 inner。 */
     private List<RegisteredTool> touchAll(List<RegisteredTool> tools,
                                           ConcurrentHashMap<String, RegisteredTool> inner) {

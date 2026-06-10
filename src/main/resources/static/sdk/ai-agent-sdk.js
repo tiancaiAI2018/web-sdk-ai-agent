@@ -91,6 +91,21 @@
     '.aiagent-sdk-send{background:#3b82f6;color:#fff;border:none;border-radius:8px;padding:0 14px;cursor:pointer;font-size:13px;font-weight:500;transition:background .15s;min-width:54px}',
     '.aiagent-sdk-send:hover:not(:disabled){background:#2563eb}',
     '.aiagent-sdk-send:disabled{background:#9ca3af;cursor:not-allowed}',
+    // ===== 工具结果重试/取消按钮(_onToolResultFailed 触发) =====
+    '.aiagent-sdk-tool-result-failed{align-self:stretch;background:#fef2f2;border:1px solid #fecaca;border-radius:8px;padding:10px 12px;margin:2px 0;font-size:12.5px;color:#991b1b;line-height:1.5;display:flex;flex-direction:column;gap:6px}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-tool-result-failed{background:#450a0a;border-color:#7f1d1d;color:#fecaca}',
+    '.aiagent-sdk-tool-result-failed-header{display:flex;align-items:center;gap:6px;font-weight:600}',
+    '.aiagent-sdk-tool-result-failed-header::before{content:"⚠️";font-size:14px}',
+    '.aiagent-sdk-tool-result-failed-detail{font-weight:400;opacity:.85;font-size:12px;margin-left:22px}',
+    '.aiagent-sdk-tool-result-actions{display:inline-flex;gap:6px;align-items:center;flex-wrap:wrap;margin-left:22px}',
+    '.aiagent-sdk-tool-result-actions button{font-family:inherit;font-size:12px;line-height:1;padding:6px 12px;border-radius:6px;cursor:pointer;font-weight:500;transition:background .15s,border-color .15s,color .15s,transform .08s}',
+    '.aiagent-sdk-tool-result-actions button:active{transform:scale(0.96)}',
+    '.aiagent-sdk-tool-result-actions .aiagent-sdk-btn-retry{background:#3b82f6;color:#fff;border:1px solid #3b82f6}',
+    '.aiagent-sdk-tool-result-actions .aiagent-sdk-btn-retry:hover{background:#2563eb;border-color:#2563eb}',
+    '.aiagent-sdk-tool-result-actions .aiagent-sdk-btn-cancel{background:transparent;color:#6b7280;border:1px solid #d1d5db}',
+    '.aiagent-sdk-tool-result-actions .aiagent-sdk-btn-cancel:hover{background:#f3f4f6;color:#374151;border-color:#9ca3af}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-tool-result-actions .aiagent-sdk-btn-cancel{color:#9ca3af;border-color:#4b5563}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-tool-result-actions .aiagent-sdk-btn-cancel:hover{background:#374151;color:#e5e7eb;border-color:#6b7280}',
     '.aiagent-sdk-badge{position:absolute;top:-4px;right:-4px;background:#ef4444;color:#fff;border-radius:10px;min-width:18px;height:18px;font-size:11px;font-weight:600;display:flex;align-items:center;justify-content:center;padding:0 5px;box-shadow:0 0 0 2px #fff}',
     '.aiagent-sdk-panel.aiagent-sdk-pos-bl{right:auto;left:24px}',
     '.aiagent-sdk-bubble.aiagent-sdk-pos-bl{right:auto;left:24px}',
@@ -119,11 +134,15 @@
     '.aiagent-sdk-msg a{color:#3b82f6;text-decoration:underline;word-break:break-all}',
     '.aiagent-sdk-msg a:hover{color:#2563eb}',
     '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg a{color:#93c5fd}',
-    '.aiagent-sdk-msg table{border-collapse:collapse;margin:.5em 0;font-size:12.5px;display:block;overflow-x:auto;max-width:100%}',
-    '.aiagent-sdk-msg th,.aiagent-sdk-msg td{border:1px solid #e5e7eb;padding:4px 8px;text-align:left;vertical-align:top}',
-    '.aiagent-sdk-msg th{background:rgba(0,0,0,.04);font-weight:600}',
-    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th{background:rgba(255,255,255,.06)}',
-    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th,.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg td{border-color:#374151}',
+    '.aiagent-sdk-msg table{border-collapse:separate;border-spacing:0;margin:.6em 0;font-size:13px;display:table;overflow:hidden;max-width:100%;border:1px solid #e5e7eb;border-radius:8px;width:auto}',
+    '.aiagent-sdk-msg th,.aiagent-sdk-msg td{border:none;border-bottom:1px solid #f3f4f6;padding:7px 12px;text-align:left;vertical-align:middle}',
+    '.aiagent-sdk-msg tr:last-child td{border-bottom:none}',
+    '.aiagent-sdk-msg th{background:#f9fafb;font-weight:600;color:#374151}',
+    '.aiagent-sdk-msg tbody tr:nth-child(even) td{background:#fafbfc}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg table{border-color:#374151}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th{background:#1f2937;color:#e5e7eb}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg th,.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg td{border-bottom-color:#374151}',
+    '.aiagent-sdk-panel.aiagent-sdk-theme-dark .aiagent-sdk-msg tbody tr:nth-child(even) td{background:#1f2937}',
     '.aiagent-sdk-msg del{color:#9ca3af;text-decoration:line-through}',
     '.aiagent-sdk-msg input[type=checkbox]{margin-right:6px}',
     // ===== 图片:百分比缩放(限制在消息气泡内)+ 加载模糊过渡 =====',
@@ -205,12 +224,19 @@
     // 工具池:sessionId → name → tool 定义(本地存,后端只存 schema 不存 onCall)
     this._tools = new Map();  // Map<sessionId, Map<name, {description, parameters, strict, onCall}>>
 
+    // 待提交 / 已失败可重试的 tool result。失败时持久化到 sessionStorage,
+    // 页面刷新后由 _resumePendingToolResults() 自动续传,无需用户重输。
+    this._pendingToolCall = null;
+
     this._mount();
     if (this._opts.autoOpen) this.open();
 
+    // 启动时扫 sessionStorage 续传上次未提交的 tool result(异步,不影响 init)
+    var self = this;
+    setTimeout(function () { self._resumePendingToolResults(); }, 0);
+
     // demoTools 模式:init 后台异步注册 demo 工具组(用内部固定 sessionId)
     if (this._opts.demoTools) {
-      var self = this;
       this._demoSessionId = this._opts.clientPrefix + ':demo';
       this._internalRegister(this._demoSessionId, this._opts.demoOrderTools)
         .catch(function (e) { console.warn('[AIAgent SDK] demo tools register failed:', e); });
@@ -315,6 +341,9 @@
   };
 
   AIAgent.prototype._newSession = function () {
+    // 顺手 abort 旧 sid(如果还在挂起中),免得新会话的 stream 撞 409
+    var oldSid = this._chatSessionId;
+    if (oldSid) this._postAbort(oldSid).catch(function () {});
     // 清空消息 + 重置激活的工具 + 结束录单
     this._msgEl.innerHTML = '';
     this._messages = [];
@@ -664,6 +693,11 @@
     this._sendBtn.textContent = busy ? '...' : '发送';
   };
 
+  // 简单 sleep —— _postToolResult 指数退避用
+  AIAgent.prototype._sleep = function (ms) {
+    return new Promise(function (resolve) { setTimeout(resolve, ms); });
+  };
+
   // ====================================================================
   // 工具注册(对外 API) —— v3 重构
   // ====================================================================
@@ -883,54 +917,101 @@
    * 后端用官方模式 agent.call(toolResultMsg) 恢复 TOOL_SUSPENDED 状态,
    * 把 LLM 的确认回复以 SSE 流式推回。SDK 端按新消息渲染。
    *
-   * <p>失败/409 时把错误以 system 消息插入对话,不让 UI 卡住。
+   * <p>可靠性:
+   * <ul>
+   *   <li>先持久化 pending 到 sessionStorage,刷新页面后能续传</li>
+   *   <li>5xx / 429 / 网络错误 指数退避(500/1000/2000ms,共 4 次)</li>
+   *   <li>409 状态机错配:主动 abort 清后端 + 清本地,不重试</li>
+   *   <li>4xx 其他 + SSE 消费失败:不再重试,挂"重试/取消"按钮给用户</li>
+   * </ul>
    */
   AIAgent.prototype._postToolResult = async function (toolUseId, result) {
     if (!toolUseId) return;
     var sessionId = this._chatSessionId;
     if (!sessionId) { console.warn('[AIAgent SDK] no sessionId for tool result'); return; }
 
+    // 先把 pending 存 sessionStorage,刷新页面后 _resumePendingToolResults() 能续传
+    this._pendingToolCall = { toolUseId: toolUseId, result: result, ts: Date.now() };
+    try {
+      sessionStorage.setItem('pending:' + sessionId, JSON.stringify(this._pendingToolCall));
+    } catch (e) { /* 隐私模式可能抛,吞掉 */ }
+
     var token;
     try { token = await this._ensureToken(); }
-    catch (e) { this._appendMsg('system', '⚠️ ' + e.message); return; }
+    catch (e) { this._appendMsg('system', '⚠️ ' + e.message); this._setBusy(false); return; }
 
     var url = this.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/tools/result';
+    var body = JSON.stringify({
+      toolUseId: toolUseId,
+      // onCall 没返回值时(JSON.stringify 会整个删掉 undefined 字段,
+      // 后端就报 "toolUseId and result required")给个占位
+      result: result == null ? '[Tool executed by client SDK; no result returned]'
+            : typeof result === 'string' ? result
+            : JSON.stringify(result)
+    });
+    var headers = {
+      'Authorization': 'Bearer ' + token,
+      'Content-Type': 'application/json',
+      'Accept': 'text/event-stream'
+    };
+
+    var maxAttempts = 4;   // 1 初始 + 3 重试
+    var backoff = 500;
+    var attempt = 0;
     var r;
-    try {
-      r = await fetch(url, {
-        method: 'POST',
-        headers: {
-          'Authorization': 'Bearer ' + token,
-          'Content-Type': 'application/json',
-          'Accept': 'text/event-stream'
-        },
-        body: JSON.stringify({
-          toolUseId: toolUseId,
-          // onCall 没返回值时(JSON.stringify 会整个删掉 undefined 字段,
-          // 后端就报 "toolUseId and result required")给个占位
-          result: result == null ? '[Tool executed by client SDK; no result returned]'
-                : typeof result === 'string' ? result
-                : JSON.stringify(result)
-        })
-      });
-    } catch (e) {
-      this._appendMsg('system', '⚠️ 提交工具结果失败: ' + e.message);
-      this._setBusy(false);
+    var fetchErr;
+
+    while (attempt < maxAttempts) {
+      fetchErr = null;
+      try {
+        r = await fetch(url, { method: 'POST', headers: headers, body: body });
+      } catch (e) {
+        fetchErr = e;
+      }
+
+      if (fetchErr) {
+        if (attempt === maxAttempts - 1) break;
+        await this._sleep(backoff); backoff *= 2; attempt++; continue;
+      }
+
+      // 5xx 重试
+      if (r.status >= 500 && r.status < 600 && attempt < maxAttempts - 1) {
+        await this._sleep(backoff); backoff *= 2; attempt++; continue;
+      }
+      // 429:尊重 Retry-After
+      if (r.status === 429 && attempt < maxAttempts - 1) {
+        var ra = parseInt(r.headers.get('Retry-After') || '1', 10);
+        await this._sleep(Math.max(ra * 1000, backoff));
+        backoff *= 2; attempt++; continue;
+      }
+      // 其它状态码(2xx / 4xx 非 429)直接跳出循环,不再重试
+      break;
+    }
+
+    // 所有重试用尽仍网络层失败
+    if (fetchErr) {
+      this._onToolResultFailed(sessionId, toolUseId, 'network: ' + fetchErr.message);
       return;
     }
+
+    // 409:后端状态机已乱(挂起池已 evict / sid 错 / ttl 过期),
+    // 主动 abort 清后端 + 清本地 storage,不让用户卡住
     if (r.status === 409) {
       var errText = await r.text();
       this._appendMsg('system', '⚠️ ' + (errText || 'session 已被工具调用占用'));
+      this._postAbort(sessionId).catch(function () {});
+      sessionStorage.removeItem('pending:' + sessionId);
+      this._pendingToolCall = null;
       this._setBusy(false);
       return;
     }
+    // 4xx 其他 / 重试后仍 5xx —— 不可重试错误,挂按钮
     if (!r.ok || !r.body) {
-      this._appendMsg('system', '⚠️ 提交工具结果失败: http ' + r.status);
-      this._setBusy(false);
+      this._onToolResultFailed(sessionId, toolUseId, 'http ' + r.status);
       return;
     }
 
-    // 新建 typing 渲染 LLM 看到 tool_result 后的确认回复
+    // 2xx:消耗 SSE,渲染 LLM 确认回复
     var typing = this._appendTyping();
     var assistantBuf = '';
     var replaced = false;
@@ -941,38 +1022,183 @@
         typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-assistant';
       }
     }
-    await this._consumeSseStream(r.body,
-      function (ev) {
-        assistantBuf += (ev.data || '');
-        upgradeTyping();
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
-        self._msgEl.scrollTop = self._msgEl.scrollHeight;
-      },
-      function () {
-        upgradeTyping();
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
-        self._msgEl.scrollTop = self._msgEl.scrollHeight;
-        self._setBusy(false);  // 接管 _sendUserMessage 留的 busy
-      },
-      function (e) {
-        if (replaced) {
-          typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
-          typing.textContent = '⚠️ ' + e.message;
-        } else {
-          typing.remove();
-          self._appendMsg('system', '⚠️ ' + e.message);
+    var consumed = true;
+    try {
+      await this._consumeSseStream(r.body,
+        function (ev) {
+          assistantBuf += (ev.data || '');
+          upgradeTyping();
+          typing.innerHTML = renderMarkdownLite(assistantBuf);
+          decorateImages(typing);
+          self._msgEl.scrollTop = self._msgEl.scrollHeight;
+        },
+        function () {
+          upgradeTyping();
+          typing.innerHTML = renderMarkdownLite(assistantBuf);
+          decorateImages(typing);
+          self._msgEl.scrollTop = self._msgEl.scrollHeight;
+          self._setBusy(false);  // 接管 _sendUserMessage 留的 busy
+        },
+        function (e) {
+          consumed = false;
+          if (replaced) {
+            typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
+            typing.textContent = '⚠️ ' + e.message;
+          } else {
+            typing.remove();
+            self._appendMsg('system', '⚠️ ' + e.message);
+          }
+          self._setBusy(false);
+        },
+        function (parsed) {
+          // 不应该出现(resume 后 LLM 不会立刻再调工具),有则按普通 tool_call 处理
+          if (parsed && parsed.tool && parsed.tool.indexOf('__') !== 0) {
+            self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args || {} });
+          }
         }
-        self._setBusy(false);
-      },
-      function (parsed) {
-        // 不应该出现(resume 后 LLM 不会立刻再调工具),有则按普通 tool_call 处理
-        if (parsed && parsed.tool && parsed.tool.indexOf('__') !== 0) {
-          self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args || {} });
+      );
+    } catch (e) {
+      consumed = false;
+    }
+    if (consumed) {
+      // 成功:清 storage,清 pending
+      sessionStorage.removeItem('pending:' + sessionId);
+      this._pendingToolCall = null;
+    } else {
+      this._onToolResultFailed(sessionId, toolUseId, 'sse');
+    }
+  };
+
+  /**
+   * 释放后端挂起的 agent。幂等,失败静默 —— best-effort。
+   */
+  AIAgent.prototype._postAbort = async function (sessionId) {
+    if (!sessionId) return;
+    try {
+      var token = await this._ensureToken();
+      await fetch(this.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/tools/abort', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + token }
+      });
+    } catch (e) {
+      console.warn('[AIAgent SDK] abort failed:', e.message);
+    }
+    try { sessionStorage.removeItem('pending:' + sessionId); } catch (e) {}
+    this._pendingToolCall = null;
+  };
+
+  /**
+   * 失败后用户点"重试"按钮 —— 用 _pendingToolCall 缓存的 result 再发一次。
+   * 走完整 _postToolResult 流程(包含 sessionStorage 刷新 + 指数退避)。
+   */
+  AIAgent.prototype._retryToolResult = async function () {
+    if (!this._pendingToolCall) return;
+    var p = this._pendingToolCall;
+    this._setBusy(true);
+    await this._postToolResult(p.toolUseId, p.result);
+  };
+
+  /**
+   * 失败后用户点"取消"按钮 —— 主动调 /tools/abort 释放后端 agent,
+   * 删本地 pending storage,UI 提示用户。
+   */
+  AIAgent.prototype._cancelToolResult = async function () {
+    var sid = this._chatSessionId;
+    await this._postAbort(sid);
+    this._appendMsg('system', '已放弃本次工具调用,可继续对话。');
+    this._setBusy(false);
+  };
+
+  /**
+   * /tools/result 不可重试失败时调用:展示"重试/取消"按钮给用户。
+   * 默认实现:插入一个醒目的红色错误卡片 + 两个按钮;宿主可覆盖此方法做更精致的 UI。
+   */
+  AIAgent.prototype._onToolResultFailed = function (sessionId, toolUseId, reason) {
+    console.warn('[AIAgent SDK] tool result failed:', reason);
+    this._renderToolResultFailedCard(reason);
+    this._setBusy(false);
+  };
+
+  /**
+   * 渲染"工具结果提交失败"卡片:错误描述 + 重试/取消按钮。
+   * 复用 .aiagent-sdk-tool-result-failed 容器样式(顶部 style 块已定义)。
+   * 用 _messages 也记一条(角色 system),方便后续 reload 检查状态。
+   */
+  AIAgent.prototype._renderToolResultFailedCard = function (reason) {
+    // 防御:已存在错误卡片就不再插
+    if (this._msgEl.querySelector('.aiagent-sdk-tool-result-failed')) {
+      return;
+    }
+    var card = document.createElement('div');
+    card.className = 'aiagent-sdk-tool-result-failed';
+
+    var header = document.createElement('div');
+    header.className = 'aiagent-sdk-tool-result-failed-header';
+    header.textContent = '提交工具结果失败';
+
+    var detail = document.createElement('div');
+    detail.className = 'aiagent-sdk-tool-result-failed-detail';
+    detail.textContent = '原因:' + (reason || '未知') + '。可重试,或取消本次调用以继续对话。';
+
+    var bar = document.createElement('div');
+    bar.className = 'aiagent-sdk-tool-result-actions';
+
+    var self = this;
+    var retryBtn = document.createElement('button');
+    retryBtn.type = 'button';
+    retryBtn.className = 'aiagent-sdk-btn-retry';
+    retryBtn.textContent = '↻ 重试';
+    retryBtn.addEventListener('click', function () {
+      if (card.parentNode) card.parentNode.removeChild(card);
+      self._retryToolResult();
+    });
+
+    var cancelBtn = document.createElement('button');
+    cancelBtn.type = 'button';
+    cancelBtn.className = 'aiagent-sdk-btn-cancel';
+    cancelBtn.textContent = '✕ 取消';
+    cancelBtn.addEventListener('click', function () {
+      if (card.parentNode) card.parentNode.removeChild(card);
+      self._cancelToolResult();
+    });
+
+    bar.appendChild(retryBtn);
+    bar.appendChild(cancelBtn);
+    card.appendChild(header);
+    card.appendChild(detail);
+    card.appendChild(bar);
+    this._msgEl.appendChild(card);
+    this._messages.push({ role: 'system', text: 'tool result failed: ' + (reason || '') });
+    this._msgEl.scrollTop = this._msgEl.scrollHeight;
+  };
+
+  /**
+   * SDK 启动时调:扫 sessionStorage,续传上次未提交的 tool result。
+   * 后端用 409 回应就视为 TTL 过期,主动 abort 清掉,不让用户感知残留。
+   */
+  AIAgent.prototype._resumePendingToolResults = async function () {
+    if (typeof sessionStorage === 'undefined') return;
+    var pendingKey = null;
+    var pending = null;
+    try {
+      for (var i = 0; i < sessionStorage.length; i++) {
+        var k = sessionStorage.key(i);
+        if (k && k.indexOf('pending:') === 0) {
+          pendingKey = k;
+          pending = JSON.parse(sessionStorage.getItem(k) || 'null');
+          break;  // 一次只处理一个
         }
       }
-    );
+    } catch (e) { return; }
+    if (!pendingKey || !pending || !pending.toolUseId) {
+      if (pendingKey) sessionStorage.removeItem(pendingKey);
+      return;
+    }
+    var sid = pendingKey.substring('pending:'.length);
+    this._appendMsg('system', '检测到上次未完成的工具调用,正在重试提交…');
+    this._pendingToolCall = pending;
+    // 直接复用 _postToolResult(走完整流程,失败的话会显示重试/取消)
+    await this._postToolResult(pending.toolUseId, pending.result);
   };
 
   /**

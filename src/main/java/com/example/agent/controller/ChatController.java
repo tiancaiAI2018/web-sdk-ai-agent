@@ -5,6 +5,7 @@ import com.example.agent.auth.AuthPrincipal;
 import com.example.agent.extract.NoPendingToolException;
 import com.example.agent.extract.SessionBusyException;
 import com.example.agent.extract.StreamBlockedException;
+import com.example.agent.extract.ToolUseIdMismatchException;
 import com.example.agent.session.SessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -145,6 +146,23 @@ public class ChatController {
     }
 
     /**
+     * v3+:SDK 在 /tools/result 失败后,或用户主动放弃工具调用时调用。
+     * 同步从 suspendedAgents 移除,下次 /stream 不再 409。不持久化半配对 memory。
+     */
+    @PostMapping("/{sessionId}/tools/abort")
+    @Operation(summary = "释放挂起的 agent",
+        description = "SDK 在 /tools/result 失败重试耗尽 / 用户主动取消 / 页面关闭时调用。"
+                   + "幂等:无挂起时也返回 200,aborted=false。")
+    public Mono<ResponseEntity<Map<String, String>>> abort(@PathVariable String sessionId,
+                                                          ServerWebExchange exchange) {
+        AuthPrincipal p = principalOf(exchange);
+        String ip = AuditService.extractIp(exchange.getRequest());
+        boolean removed = sessions.abort(sessionId);
+        audit.logToolAbort(p.clientId(), p.jti(), sessionId, removed, ip);
+        return Mono.just(ResponseEntity.ok(Map.of("aborted", String.valueOf(removed))));
+    }
+
+    /**
      * 把单个 AgentScope Event 翻译成 1~N 个 SSE 帧。工具调用时**额外**推一个
      * event: tool_call 帧,data 含 tool 名 + args(JSON)。
      *
@@ -268,5 +286,16 @@ public class ChatController {
     public Mono<ResponseEntity<Map<String, String>>> handleNoPendingTool(NoPendingToolException e) {
         return Mono.just(ResponseEntity.status(409)
             .body(Map.of("error", "no_pending_tool_call", "message", e.getMessage())));
+    }
+
+    /**
+     * /tools/result 传入的 toolUseId 与 suspendedAgents 中实际等待的 id 不一致
+     * (SDK 用过期 id 重试 / sid 错配 / stale SSE 帧)。区分于 no_pending_tool_call
+     * —— 那是"没挂起",这是"挂起了但 id 错"。
+     */
+    @ExceptionHandler(ToolUseIdMismatchException.class)
+    public Mono<ResponseEntity<Map<String, String>>> handleMismatch(ToolUseIdMismatchException e) {
+        return Mono.just(ResponseEntity.status(409)
+            .body(Map.of("error", "tool_use_id_mismatch", "message", e.getMessage())));
     }
 }
