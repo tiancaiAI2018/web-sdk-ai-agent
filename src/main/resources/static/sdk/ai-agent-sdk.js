@@ -592,7 +592,9 @@
         typing.innerHTML = renderMarkdownLite(assistantBuf);
         decorateImages(typing);
         self._msgEl.scrollTop = self._msgEl.scrollHeight;
-        self._setBusy(false);
+        // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
+        // 避免用户在工具结果回传完成前又发新消息撞 409
+        if (!submitted) self._setBusy(false);
       },
       onError: function (e) {
         if (replaced) {
@@ -605,8 +607,9 @@
           self._appendMsg('system', '⚠️ 错误:' + e.message);
         }
         self._setBusy(false);
+        submitted = true;  // 错误时也不让 _postToolResult 接管 busy
       },
-      onToolCall: function (parsed) {
+      onToolCall: async function (parsed) {
         if (!parsed || !parsed.tool) return;
         // 过滤掉 AgentScope 内部的工具(框架用 __fragment__ 推流式分片)
         if (parsed.tool.indexOf('__') === 0) return;
@@ -618,16 +621,29 @@
         if (submitted) return;  // 一个 stream 内只处理第一次"完整"调用
         submitted = true;
         self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args });
-        // 找本地注册时保存的 onCall 回调(按 sid + name)
+        // 调本地 onCall 拿 result(sync 或 async 都能 await)
+        var toolResult;
         var localTool = self._getLocalTool(self._chatSessionId, parsed.tool);
         if (localTool && localTool.onCall) {
-          try { localTool.onCall(parsed.args); }
-          catch (e) { console.error('[AIAgent SDK] onCall threw:', e); }
+          try {
+            toolResult = await Promise.resolve(localTool.onCall(parsed.args));
+          } catch (e) {
+            console.error('[AIAgent SDK] onCall threw:', e);
+            self._appendMsg('system', '⚠️ onCall 失败: ' + e.message);
+          }
         }
         // 浮窗录单模式下,onCallSnapshot 是 startExtractSession 时传进来的 onFormSubmit
         if (onCallSnapshot && parsed.tool === 'submit_form') {
-          try { onCallSnapshot(parsed.args); }
-          catch (e) { console.error('[AIAgent SDK] extract onCall threw:', e); }
+          try {
+            var r = onCallSnapshot(parsed.args);
+            if (r != null && toolResult == null) toolResult = r;
+          } catch (e) {
+            console.error('[AIAgent SDK] extract onCall threw:', e);
+          }
+        }
+        // 把 result 回传后端,触发 LLM 看到结果后继续(官方 TOOL 恢复模式)
+        if (parsed.id) {
+          await self._postToolResult(parsed.id, toolResult);
         }
       }
     };
@@ -860,6 +876,103 @@
     }
     if (!r.ok || !r.body) { onError(new Error('http ' + r.status)); return; }
     return this._consumeSseStream(r.body, onChunk, onDone, onError, onToolCall);
+  };
+
+  /**
+   * 内部:onCall 完成后,把工具执行结果 POST 到 /chat/{sid}/tools/result,
+   * 后端用官方模式 agent.call(toolResultMsg) 恢复 TOOL_SUSPENDED 状态,
+   * 把 LLM 的确认回复以 SSE 流式推回。SDK 端按新消息渲染。
+   *
+   * <p>失败/409 时把错误以 system 消息插入对话,不让 UI 卡住。
+   */
+  AIAgent.prototype._postToolResult = async function (toolUseId, result) {
+    if (!toolUseId) return;
+    var sessionId = this._chatSessionId;
+    if (!sessionId) { console.warn('[AIAgent SDK] no sessionId for tool result'); return; }
+
+    var token;
+    try { token = await this._ensureToken(); }
+    catch (e) { this._appendMsg('system', '⚠️ ' + e.message); return; }
+
+    var url = this.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/tools/result';
+    var r;
+    try {
+      r = await fetch(url, {
+        method: 'POST',
+        headers: {
+          'Authorization': 'Bearer ' + token,
+          'Content-Type': 'application/json',
+          'Accept': 'text/event-stream'
+        },
+        body: JSON.stringify({
+          toolUseId: toolUseId,
+          // onCall 没返回值时(JSON.stringify 会整个删掉 undefined 字段,
+          // 后端就报 "toolUseId and result required")给个占位
+          result: result == null ? '[Tool executed by client SDK; no result returned]'
+                : typeof result === 'string' ? result
+                : JSON.stringify(result)
+        })
+      });
+    } catch (e) {
+      this._appendMsg('system', '⚠️ 提交工具结果失败: ' + e.message);
+      this._setBusy(false);
+      return;
+    }
+    if (r.status === 409) {
+      var errText = await r.text();
+      this._appendMsg('system', '⚠️ ' + (errText || 'session 已被工具调用占用'));
+      this._setBusy(false);
+      return;
+    }
+    if (!r.ok || !r.body) {
+      this._appendMsg('system', '⚠️ 提交工具结果失败: http ' + r.status);
+      this._setBusy(false);
+      return;
+    }
+
+    // 新建 typing 渲染 LLM 看到 tool_result 后的确认回复
+    var typing = this._appendTyping();
+    var assistantBuf = '';
+    var replaced = false;
+    var self = this;
+    function upgradeTyping() {
+      if (!replaced) {
+        replaced = true;
+        typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-assistant';
+      }
+    }
+    await this._consumeSseStream(r.body,
+      function (ev) {
+        assistantBuf += (ev.data || '');
+        upgradeTyping();
+        typing.innerHTML = renderMarkdownLite(assistantBuf);
+        decorateImages(typing);
+        self._msgEl.scrollTop = self._msgEl.scrollHeight;
+      },
+      function () {
+        upgradeTyping();
+        typing.innerHTML = renderMarkdownLite(assistantBuf);
+        decorateImages(typing);
+        self._msgEl.scrollTop = self._msgEl.scrollHeight;
+        self._setBusy(false);  // 接管 _sendUserMessage 留的 busy
+      },
+      function (e) {
+        if (replaced) {
+          typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
+          typing.textContent = '⚠️ ' + e.message;
+        } else {
+          typing.remove();
+          self._appendMsg('system', '⚠️ ' + e.message);
+        }
+        self._setBusy(false);
+      },
+      function (parsed) {
+        // 不应该出现(resume 后 LLM 不会立刻再调工具),有则按普通 tool_call 处理
+        if (parsed && parsed.tool && parsed.tool.indexOf('__') !== 0) {
+          self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args || {} });
+        }
+      }
+    );
   };
 
   /**

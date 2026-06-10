@@ -102,6 +102,16 @@ public class AuditService {
         repo.save(AuditLog.of("TOOL_UNREGISTER", clientId, sessionId, jti, ip, detail));
     }
 
+    /**
+     * v3:SDK 调 /tools/result 提交工具执行结果,写一条审计(只记 toolUseId,原文不存)。
+     */
+    @Transactional
+    public void logToolResult(String clientId, String jti, String sessionId,
+                              String toolUseId, String ip) {
+        String detail = "toolUseId=" + (toolUseId == null ? "" : toolUseId);
+        repo.save(AuditLog.of("TOOL_RESULT", clientId, sessionId, jti, ip, detail));
+    }
+
     /** 从 WebFlux ServerHttpRequest 提 IP(优先 X-Forwarded-For,再退回 remoteAddress)。 */
     public static String extractIp(ServerHttpRequest req) {
         if (req == null) return null;

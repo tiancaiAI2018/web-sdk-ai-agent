@@ -2,6 +2,9 @@ package com.example.agent.controller;
 
 import com.example.agent.audit.AuditService;
 import com.example.agent.auth.AuthPrincipal;
+import com.example.agent.extract.NoPendingToolException;
+import com.example.agent.extract.SessionBusyException;
+import com.example.agent.extract.StreamBlockedException;
 import com.example.agent.session.SessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
@@ -112,6 +115,36 @@ public class ChatController {
     }
 
     /**
+     * SDK 调 onCall 完成后,POST 工具执行结果,后端用官方模式
+     * {@code agent.call(toolResultMsg)} 恢复被 TOOL_SUSPENDED 的 agent,
+     * 把 LLM 的确认回复以 SSE 流式推回。
+     *
+     * <p>409 session_busy_with_tool:该 sid 当前没有挂起的工具调用(可能是
+     * SDK 重复发,或 sid 错配)。
+     */
+    @PostMapping(value = "/{sessionId}/tools/result", produces = MediaType.TEXT_EVENT_STREAM_VALUE)
+    @Operation(summary = "提交工具执行结果 / 恢复被挂起的 agent",
+        description = "SSE 流式返回 LLM 在看到 tool_result 后的确认回复。"
+                   + "需要 session 当前处于 TOOL_SUSPENDED 状态,否则 409。")
+    public Flux<ServerSentEvent<String>> toolResult(@PathVariable String sessionId,
+                                                   @RequestBody ToolResultRequest body,
+                                                   ServerWebExchange exchange) {
+        if (body == null || body.toolUseId() == null || body.toolUseId().isBlank()
+                || body.result() == null) {
+            return Flux.error(new IllegalArgumentException(
+                "toolUseId and result required"));
+        }
+        AuthPrincipal p = principalOf(exchange);
+        String ip = AuditService.extractIp(exchange.getRequest());
+        audit.logToolResult(p.clientId(), p.jti(), sessionId, body.toolUseId(), ip);
+        // 新的 stream 一次"last" 帧只推一次
+        java.util.concurrent.atomic.AtomicBoolean lastEmitted =
+            new java.util.concurrent.atomic.AtomicBoolean(false);
+        return sessions.resume(sessionId, body.toolUseId(), body.result())
+            .flatMap(event -> toSse(event, p, sessionId, ip, lastEmitted));
+    }
+
+    /**
      * 把单个 AgentScope Event 翻译成 1~N 个 SSE 帧。工具调用时**额外**推一个
      * event: tool_call 帧,data 含 tool 名 + args(JSON)。
      *
@@ -159,7 +192,8 @@ public class ChatController {
         } catch (JsonProcessingException e) {
             argsJson = "{}";
         }
-        String data = "{\"tool\":\"" + tu.getName() + "\",\"args\":" + argsJson + "}";
+        String data = "{\"id\":\"" + (tu.getId() == null ? "" : tu.getId())
+            + "\",\"tool\":\"" + tu.getName() + "\",\"args\":" + argsJson + "}";
 
         // audit(只存 hash,不存原文)
         String argsHash = sha256Short(argsJson);
@@ -203,6 +237,9 @@ public class ChatController {
     }
     public record ChatResponse(String sessionId, String reply) {}
 
+    /** /chat/{sid}/tools/result 请求体。 */
+    public record ToolResultRequest(String toolUseId, String result) {}
+
     @ExceptionHandler(IllegalArgumentException.class)
     public Mono<ResponseEntity<Map<String, String>>> handleBadInput(IllegalArgumentException e) {
         String msg = e.getMessage() == null ? "" : e.getMessage();
@@ -212,5 +249,24 @@ public class ChatController {
         else if (msg.startsWith("description too long")) err = "description_too_long";
         return Mono.just(ResponseEntity.badRequest()
             .body(Map.of("error", err, "message", msg)));
+    }
+
+    /**
+     * /stream 时 sid 处于 TOOL_SUSPENDED → SDK 应该走 /tools/result,409 + 明确文案。
+     */
+    @ExceptionHandler(StreamBlockedException.class)
+    public Mono<ResponseEntity<Map<String, String>>> handleStreamBlocked(StreamBlockedException e) {
+        return Mono.just(ResponseEntity.status(409)
+            .body(Map.of("error", "stream_blocked_by_pending_tool", "message", e.getMessage())));
+    }
+
+    /**
+     * /tools/result 时 sid 没有挂起 → 重复调 /tools/result,或 TTL 过期,或 sid 错。
+     * 用不同 error code 让 SDK 端能区分"等"还是"放弃"。
+     */
+    @ExceptionHandler(NoPendingToolException.class)
+    public Mono<ResponseEntity<Map<String, String>>> handleNoPendingTool(NoPendingToolException e) {
+        return Mono.just(ResponseEntity.status(409)
+            .body(Map.of("error", "no_pending_tool_call", "message", e.getMessage())));
     }
 }

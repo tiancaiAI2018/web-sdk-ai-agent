@@ -60,7 +60,7 @@
       },
       title: 'AI 助手',
       subtitle: '点我开始聊天',
-      welcomeMessage: '你好!我是 AI 助手,可以直接跟我聊天,或者点浮窗右上角 📋 按钮开启"录单模式",我会把字段值回填到上方订单表单。',
+      welcomeMessage: '你好!我是 AI 助手,可以直接跟我聊天,或者点浮窗右上角 📋 按钮开启"录单模式"。凑齐字段后我会调 submit_form 把数据推到本页面的订单表单,同时 AI 会看到回执并生成确认文案。',
       placeholder: '输入消息,Enter 发送,Shift+Enter 换行',
       theme: 'light',
       position: 'bottom-right',
@@ -94,6 +94,13 @@
               setTimeout(function () { el.classList.remove('filled'); }, 1500);
             }
           });
+          // 同步返回一个"提交回执"。SDK 会把它 POST 到 /tools/result,
+          // 后端 agent.call(toolResultMsg) 恢复,LLM 看到这条回执后再生成一句确认回复
+          // —— 这样浮窗里能看到完整的"录入 → AI 确认"两段式交互。
+          // 如果 onCall 不返回值,SDK 内部会用 "[Tool executed by client SDK; no result returned]" 占位,
+          // LLM 也能继续聊,但不会知道具体提交了啥。
+          return '订单 ' + (payload.orderId || '(未填)') + ' 已提交到本系统,字段: '
+            + Object.keys(payload).join(', ');
         }
       }]
     });
