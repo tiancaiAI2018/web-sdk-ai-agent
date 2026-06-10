@@ -2,13 +2,71 @@
 
 最小可用的 Spring Boot 3 + AgentScope Java AI agent 服务,带第三方前端 SDK 接入能力。
 
+---
+
+## 🤖 Claude Code 速查(给未来 AI 实例)
+
+> **本节是 codebase 入口**。任何不熟悉的实现细节,**先 grep / Read** 再下结论。CLAUDE.md 里另有工作准则。
+
+### 一句话架构
+
+`ChatModelBase` (单例) + `SessionManager`(每 sid 一个 ReActAgent,基于 Toolkit + JsonSession) + `JwtAuthFilter`(唯一鉴权入口 + namespace 强制) + `ToolRegistry`(v3:第三方注册工具,30 分钟 TTL)。
+
+### 5 个不要破坏的不变量
+
+1. **sessionId 必须以 `{clientId}:` 开头**。`JwtAuthFilter` 强制,违规 400 + 审计 `CROSS_TENANT_ACCESS`。
+2. **API key 永远从 `ANTHROPIC_API_KEY` 环境变量来**。yml 是 `${ANTHROPIC_API_KEY:}` 空默认,写死即事故。
+3. **`ReActAgent` 不能跨 stream 复用**。v3 因 AgentScope 1.0.12 `Toolkit` build() 后不可改,**每次 stream 都 new 一个**。记忆靠 `JsonSession` 持久化保留(见 `SessionManager.build` 注释)。
+4. **`JwtAuthFilter` 是唯一鉴权入口**。新增需鉴权端点必须经过它,只把白名单前缀数组扩展;不要绕开。
+5. **`description` 走 `DescriptionGuard` 黑名单**。工具 description 直接进 sysPrompt,任一注入特征("ignore the above"、"system:"、`<|im_start|>` 等)即拒。**P0**:接真实第三方前必须升级到小 LLM 二次审核。
+
+### 关键 Bean 与构造点
+
+| 单例 | 出处 | 谁注入它 |
+|---|---|---|
+| `ChatModelBase` (Anthropic 或 OpenAI) | `AgentConfig`(`@ConditionalOnProperty enable`) | `SessionManager` |
+| `Session`(`JsonSession`) | `AgentConfig` | `SessionManager` |
+| `ToolRegistry`(按 sid 索引) | `extract/`(无 @Configuration,直接 `@Component`) | `SessionManager`, `ToolController`, `ToolRegistryCleaner` |
+| `ToolSchemaFactory` | `extract/` | `SessionManager`(每次 build 新 Toolkit 时用) |
+
+`SessionManager.build` 是唯一造 `ReActAgent` 的地方。`ChatController` 写薄,只做参数校验 + SSE 翻译。
+
+### v2 → v3 增量(代码里已经做了,README 部分章节还停在 v2)
+
+- **多模型**:`agentscope.openai.*` 段(`@ConditionalOnProperty agentscope.openai.enable`),`AnthropicChatModel` 和 `OpenAIChatModel` 可独立开关
+- **第三方工具 schema 注入**:`POST /chat/{sid}/tools/register` 把 JSON Schema 注册到 `ToolRegistry`,`{message, activeTools:["name1"]}` 在 stream 时激活
+- **流式 `event: tool_call` 帧**:`ChatController.toSse` 检测 `ToolUseBlock` 时多推一帧 `{"tool":"name","args":{...}}`
+- **SDK Markdown 渲染 + 浮窗**:`static/sdk/ai-agent-sdk.js` + `static/sdk/vendor/`(marked + DOMPurify)
+- **Prompt-injection 黑名单**:`DescriptionGuard.INJECTION_PATTERNS` 6 条正则,MVP 阶段,接真实第三方前必须升级
+- **`@EnableScheduling` + `ToolRegistryCleaner`**:每 5 分钟清 30 分钟无活动的 sid,同步 `SessionManager.evict(sid)`
+
+### 找东西的入口
+
+| 想找 | 入口 |
+|---|---|
+| 路由总表 | `controller/ChatController.java` + `controller/ToolController.java` + `auth/AuthController.java` + `admin/AdminController.java`(都有 `@Tag`) |
+| "v2 namespace 是怎么强制" | `auth/JwtAuthFilter.java:88-100` |
+| "stream 帧格式怎么定" | `controller/ChatController.java:120-175`(`toSse`) |
+| "工具 schema 校验规则" | `extract/RegisteredTool.java:validateName / validateParameters` + `extract/DescriptionGuard.java` |
+| "ReActAgent 怎么 new" | `session/SessionManager.java:84-112`(`build`) |
+| AgentScope 真实类名(文档不全) | `jar tf ~/.m2/repository/io/agentscope/agentscope/1.0.12/agentscope-1.0.12.jar \| grep -E "ChatModel\|Event\|StreamOptions"` |
+
+---
+
 ## 能力一览
 
 **AI 对话**
 - `POST /chat/{sessionId}` — 阻塞式请求 / 响应
-- `POST /chat/{sessionId}/stream` — Server-Sent Events 流式输出
+- `POST /chat/{sessionId}/stream` — Server-Sent Events 流式输出(`body.activeTools` 可选,激活已注册工具,模型调用时多发 `event: tool_call` 帧)
 - 会话短期记忆走 `InMemoryMemory`,长期持久化走 `JsonSession`(按 `sessionId` 分目录,根目录默认 `~/.agentscope/sessions/`)
-- 底层模型为 `AnthropicChatModel`,指向 Anthropic 兼容网关,默认 `https://api.minimaxi.com/anthropic` + 模型 `MiniMax-M3`
+- 底层模型为 `AnthropicChatModel` / `OpenAIChatModel`,独立开关,默认 `https://api.minimaxi.com/anthropic` + 模型 `MiniMax-M3`
+
+**第三方工具注册(v3)**
+- `POST /chat/{sid}/tools/register` — 全量替换该 sid 的工具集(JSON Schema)
+- `POST /chat/{sid}/tools/unregister` — 删指定 name,空 = 全清
+- `GET  /chat/{sid}/tools` — 列表元信息(不返 parameters,防 schema 反复拉)
+- 内存版 `ToolRegistry`,按 `sid` 索引;30 分钟无活动自动清理,定时器同步清 `SessionManager` 里对应 agent
+- description 走 `DescriptionGuard` 黑名单(prompt injection 拦截)
 
 **第三方接入(v2)**
 - JWT RS256 鉴权(`/auth/token` 双 grant: `client_credentials` + `refresh_token`)
@@ -254,10 +312,10 @@ curl -s -X POST http://localhost:8080/auth/token \
 
 ```
 src/main/java/com/example/agent/
-├── AgentApplication.java          Spring Boot 入口
+├── AgentApplication.java          Spring Boot 入口(@EnableScheduling:v3 ToolRegistryCleaner)
 ├── config/                        配置与基础 Bean
-│   ├── AgentProperties.java       agentscope.* 段
-│   ├── AgentConfig.java           AnthropicChatModel + JsonSession Bean
+│   ├── AgentProperties.java       agentscope.* 段(anthropic + openai + session + agent)
+│   ├── AgentConfig.java           ChatModelBase(anthropic/openai 各自 @ConditionalOnProperty) + JsonSession Bean
 │   ├── JwtProperties.java         agentscope.jwt 段
 │   ├── CorsProperties.java        agentscope.cors 段
 │   ├── DemoProperties.java        agentscope.demo 段(预置凭据)
@@ -282,13 +340,21 @@ src/main/java/com/example/agent/
 ├── audit/                         审计
 │   ├── AuditLog.java              JPA 实体(audit_log 表,带 jti/ip 列)
 │   ├── AuditLogRepository.java
-│   └── AuditService.java          logAuthSuccess/Fail/RateLimit, logChatStart/Done, logCrossTenantAccess
+│   └── AuditService.java          logAuthSuccess/Fail/RateLimit, logChatStart/Done, logCrossTenantAccess,
+│                                  logToolRegister/Unregister, logFormSubmit(args 只存 hash)
 ├── admin/                         审计查询(v1 新增)
 │   └── AdminController.java       GET /admin/audit
+├── extract/                       v3 第三方工具注册
+│   ├── RegisteredTool.java        record + Draft;name 白名单 + 浅层 JSON Schema 校验
+│   ├── DescriptionGuard.java      prompt injection 6 条黑名单正则(MVP,接真实第三方前必须升级)
+│   ├── ToolSchemaFactory.java     RegisteredTool → AgentScope ToolSchema
+│   ├── ToolRegistry.java          按 sid 索引,30 分钟 TTL,get 触发 lastUsedAt
+│   └── ToolRegistryCleaner.java   @Scheduled 5 分钟跑一次,过期 sid 整条清,同步 SessionManager.evict
 ├── session/
-│   └── SessionManager.java        每 sessionId 一个 ReActAgent,save/load
+│   └── SessionManager.java        每 sessionId 一次 build(因 AgentScope 1.0.12 toolkit 不可改)
 └── controller/
-    └── ChatController.java        /chat 和 /chat/{id}/stream 两个端点(需鉴权)
+    ├── ChatController.java        /chat 和 /chat/{id}/stream(需鉴权;支持 activeTools 激活)
+    └── ToolController.java        /chat/{sid}/tools/{register,unregister,list}(v3 新增)
 
 src/main/resources/
 ├── application.yml
@@ -434,7 +500,18 @@ AgentScope 官方文档没明说、但代码里已经验证过的事实:
 - ✅ Swagger UI(`/swagger-ui.html`)
 - ✅ `/admin/audit` 审计查询
 
-### 留给下一轮(P2 / P3)
+### v3 已做(本分支)
+
+- ✅ 多模型支持:`AnthropicChatModel` / `OpenAIChatModel` 独立 `@ConditionalOnProperty` 开关
+- ✅ 第三方工具 schema 注入:`POST /chat/{sid}/tools/register` + `ToolRegistry` + 30 分钟 TTL 清理
+- ✅ 流式 `event: tool_call` 帧:`ChatController.toSse` 在模型调工具时多推 `{"tool","args"}` 给 SDK
+- ✅ 工具名白名单 + description 黑名单:`RegisteredTool.NAME_PATTERN` + `DescriptionGuard`
+- ✅ Markdown 渲染 + XSS 防护:浏览器 SDK 引入 marked + DOMPurify(`static/sdk/vendor/`)
+- ✅ 多轮"智能录单"基础:`SessionManager.stream(sid, text, activeTools)` + `JsonSession` 记忆持久化
+- ✅ 工具注册表 30 分钟 TTL + 同步 `SessionManager.evict` 控内存
+- ✅ 审计 `TOOL_REGISTER` / `TOOL_UNREGISTER` / `FORM_SUBMIT`(args 只存 hash)
+
+### 留给下一轮(P2 / P3 / P4)
 
 - ❌ Token 撤销(jti 黑名单)
 - ❌ 安全响应头(HSTS / nosniff / frame-ancestors)

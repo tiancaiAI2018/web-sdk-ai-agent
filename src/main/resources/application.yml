@@ -27,6 +27,11 @@ agentscope:
     api-key: ${ANTHROPIC_API_KEY:}
     model-name: MiniMax-M3
     base-url: https://api.minimaxi.com/anthropic
+    enable: false
+  openai:
+    base-url: https://api-inference.modelscope.cn/v1
+    api-key: ms-c8e7d2eb-4784-41fd-9102-e213ccf549d8 #不要删除这个key 就这样
+    model-name: Qwen/Qwen3.5-35B-A3B
     enable: true
   session:
     storage-dir: ${user.home}/.agentscope/sessions
