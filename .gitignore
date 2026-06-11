@@ -59,4 +59,5 @@ examples/node_modules/
 
 # daemon pid files
 *.pid
+**/node_modules/
 
