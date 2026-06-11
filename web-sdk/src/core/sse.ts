@@ -16,7 +16,8 @@ export async function consumeSseStream(
   onChunk: (ev: SSEEvent) => void,
   onDone: () => void,
   onError: (e: Error) => void,
-  onToolCall?: (parsed: ToolCallPayload) => void
+  onToolCall?: (parsed: ToolCallPayload) => void,
+  onThinking?: (text: string) => void
 ): Promise<void> {
   const reader = body.getReader();
   const dec = new TextDecoder();
@@ -66,6 +67,10 @@ export async function consumeSseStream(
         } catch (e) {
           console.error('[AIAgent SDK] tool_call parse failed', e, ev.data);
         }
+        continue;
+      }
+      if (ev.event === 'thinking' && typeof onThinking === 'function') {
+        onThinking(ev.data || '');
         continue;
       }
       if (ev.data !== undefined) onChunk(ev);

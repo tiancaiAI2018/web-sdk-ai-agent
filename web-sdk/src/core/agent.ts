@@ -61,6 +61,9 @@ import {
 import {
   markToolCardSuccess,
   updateToolCardProgress,
+  createThinkingCard,
+  setThinkingContent,
+  finalizeThinking,
 } from '../ui/components/tool-card';
 import type {
   AIAgentOptions,
@@ -135,6 +138,8 @@ export class AIAgent {
   _demoSessionId: string | null = null;
   /** 最近一张工具调用卡片的根元素(供 _postToolResult 标记成功/失败用) */
   _lastToolCard: HTMLElement | null = null;
+  /** 当前流式思考卡片的根元素(供 onThinking 追加用) */
+  _thinkingCard: HTMLElement | null = null;
 
   // ====================================================================
   // 公共入口
@@ -329,6 +334,7 @@ export class AIAgent {
     this._activeTools = [];
     this._extractOnCall = null;
     this._chatSessionId = null;
+    this._thinkingCard = null;
     // 新会话:重新显示 welcome 区(如果是新会话)
     if (this._widget && this._opts.welcomeMessage) {
       this._widget.setWelcome(this._opts.welcomeMessage);
@@ -362,6 +368,7 @@ export class AIAgent {
     // assistant 消息占位(内部是 5 颗粒子,等第一次 onChunk 到达时清空填文本)
     const typing = appendTyping(refs.msgEl);
     let assistantBuf = '';
+    let thinkingBuf = '';
     const self = this;
     const activeSnapshot = this._activeTools.slice();
     const onCallSnapshot = this._extractOnCall;
@@ -374,6 +381,11 @@ export class AIAgent {
         // 第一次有内容到达:清空粒子 + 流式光标 active
         clearTypingParticles(typing);
         markTypingActive(typing);
+        // 模型开始输出正文 → 思考卡片已完成使命,收起
+        if (self._thinkingCard) {
+          finalizeThinking(self._thinkingCard);
+          self._thinkingCard = null;
+        }
       }
     }
 
@@ -384,6 +396,7 @@ export class AIAgent {
       onChunk: (ev: SSEEvent) => void;
       onDone: () => void;
       onError: (e: Error) => void;
+      onThinking: (text: string) => void;
       onToolCall: (parsed: ToolCallPayload) => Promise<void>;
     } = {
       message: text,
@@ -403,6 +416,11 @@ export class AIAgent {
         // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
         // 避免用户在工具结果回传完成前又发新消息撞 409
         if (!submitted) self._setBusy(false);
+        // 思考完成 → 卡片收起
+        if (self._thinkingCard) {
+          finalizeThinking(self._thinkingCard);
+          self._thinkingCard = null;
+        }
       },
       onError: (e: Error) => {
         // 错误时清掉粒子(占位 div 转为 system 消息)
@@ -417,6 +435,28 @@ export class AIAgent {
         }
         self._setBusy(false);
         submitted = true; // 错误时也不让 _postToolResult 接管 busy
+        // 出错时也收起思考卡片
+        if (self._thinkingCard) {
+          finalizeThinking(self._thinkingCard);
+          self._thinkingCard = null;
+        }
+      },
+      onThinking: (text: string) => {
+        // 累积 + 全量渲染(markdown)
+        thinkingBuf += text;
+        if (!self._thinkingCard) {
+          // 把卡片插在 typing 占位 div 前面(用户消息之后,typing 之前)
+          refs.msgEl.insertBefore(
+            createThinkingCard(refs.msgEl),
+            typing
+          );
+          // 找到刚插入的卡片
+          const cards = refs.msgEl.querySelectorAll('.aiagent-sdk-thinking-card');
+          self._thinkingCard = cards.length ? (cards[cards.length - 1] as HTMLElement) : null;
+        }
+        if (self._thinkingCard) {
+          setThinkingContent(self._thinkingCard, thinkingBuf);
+        }
       },
       onToolCall: async (parsed: ToolCallPayload) => {
         if (!parsed || !parsed.tool) return;
@@ -532,6 +572,7 @@ export class AIAgent {
     onDone?: () => void;
     onError?: (e: Error) => void;
     onToolCall?: (parsed: ToolCallPayload) => void;
+    onThinking?: (text: string) => void;
   }): Promise<void> {
     const sessionId = opts.sessionId;
     const message = opts.message;
@@ -540,6 +581,7 @@ export class AIAgent {
     const onDone = opts.onDone || (() => {});
     const onError = opts.onError || ((e: Error) => console.error(e));
     const onToolCall = opts.onToolCall;
+    const onThinking = opts.onThinking;
 
     if (!sessionId) {
       onError(new Error('sessionId required'));
@@ -582,7 +624,7 @@ export class AIAgent {
       onError(new Error('http ' + r.status));
       return;
     }
-    return consumeSseStream(r.body, onChunk, onDone, onError, onToolCall);
+    return consumeSseStream(r.body, onChunk, onDone, onError, onToolCall, onThinking);
   }
 
   // ====================================================================

@@ -880,6 +880,155 @@ export const WIDGET_CSS = `
 }
 
 /* ====================================================================
+ * 思考卡片 — 模型推理过程(流式,可折叠,完成自动收起)
+ * ==================================================================== */
+.aiagent-sdk-thinking-card {
+  align-self: stretch;
+  background: rgba(0, 0, 0, 0.25);
+  backdrop-filter: blur(12px);
+  -webkit-backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--aia-paint-2);
+  border-radius: 10px;
+  /* 不加 overflow:hidden,否则 body 内部的 overflow-y:auto 滚动被截 */
+  animation: aia-thinking-in 320ms var(--aia-anim-ease) forwards;
+  transition: max-height 0.4s ease;
+  max-height: 200px;
+}
+.aiagent-sdk-thinking-card.aiagent-sdk-thinking-done {
+  max-height: 48px;  /* 40 → 48,多张堆叠时 header 不挤成一条缝 */
+}
+.aiagent-sdk-thinking-card.aiagent-sdk-thinking-expanded {
+  max-height: 500px;  /* 给展开后留够滚动空间,header 40 + body 460 */
+}
+
+/* 入场:墨水渗纸 */
+@keyframes aia-thinking-in {
+  from {
+    opacity: 0;
+    transform: translateY(8px);
+    clip-path: circle(0% at 50% 50%);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+    clip-path: circle(100% at 50% 50%);
+  }
+}
+
+/* 头部 */
+.aiagent-sdk-thinking-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+}
+
+/* 虹彩圆点(思考中 → 完成变绿) */
+.aiagent-sdk-thinking-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(
+    from 0deg,
+    var(--aia-paint-1), var(--aia-paint-2),
+    var(--aia-paint-3), var(--aia-paint-4), var(--aia-paint-1)
+  );
+  animation: aia-core-spin 3s linear infinite;
+  box-shadow: 0 0 6px var(--aia-glow);
+}
+.aiagent-sdk-thinking-done .aiagent-sdk-thinking-dot {
+  background: var(--aia-success);
+  animation: none;
+  box-shadow: 0 0 6px var(--aia-success);
+}
+
+/* 标签 */
+.aiagent-sdk-thinking-label {
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--aia-text-muted);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* 展开/收起按钮 */
+.aiagent-sdk-thinking-toggle {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 6px;
+  color: var(--aia-text-muted);
+  font-size: 11px;
+  font-family: var(--aia-font);
+  padding: 3px 10px;
+  min-height: 22px;  /* 提升可点击区,堆叠时更容易点 */
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1.5;
+}
+.aiagent-sdk-thinking-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--aia-text);
+}
+
+/* 主体(等宽字体,底部淡出) */
+.aiagent-sdk-thinking-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--aia-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--aia-text-muted);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  max-height: 156px;
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+  opacity: 1;
+}
+.aiagent-sdk-thinking-done .aiagent-sdk-thinking-body {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+.aiagent-sdk-thinking-expanded .aiagent-sdk-thinking-body {
+  /* max-height 包含 padding (box-sizing:border-box),所以用 calc 减掉 padding 上下 20px */
+  /* 这样 max-height:460 包含 20px padding → 内容 440,刚好被 card 框住,滚动条不溢出 */
+  max-height: calc(460px - 20px);
+  overflow-y: auto;
+  mask-image: none;
+  -webkit-mask-image: none;
+  /* 覆盖 .done 状态下的 padding:0 / opacity:0 — 展开后内容必须可见 */
+  padding-top: 10px;
+  padding-bottom: 10px;
+  opacity: 1;
+}
+/* 滚动条样式 — 和消息区一致,深色细条 */
+.aiagent-sdk-thinking-body::-webkit-scrollbar { width: 6px; }
+.aiagent-sdk-thinking-body::-webkit-scrollbar-thumb {
+  background: var(--aia-text-faint);
+  border-radius: 3px;
+}
+.aiagent-sdk-thinking-body::-webkit-scrollbar-track { background: transparent; }
+
+/* 无障碍:减少动画 */
+@media (prefers-reduced-motion: reduce) {
+  .aiagent-sdk-thinking-card { animation: none; }
+  .aiagent-sdk-thinking-dot { animation: none; }
+  .aiagent-sdk-thinking-body { transition: none; }
+  .aiagent-sdk-thinking-card { transition: none; }
+}
+
+/* ====================================================================
  * 输入栏 — 底部焦点线 + 圆形发送按钮(SVG 箭头)
  * ==================================================================== */
 .aiagent-sdk-inputbar {

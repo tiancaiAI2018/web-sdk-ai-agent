@@ -139,3 +139,87 @@ export function jsonToHighlightedHtml(json: string): string {
     }
   );
 }
+
+import { renderMarkdownLite, decorateImages } from '../../core/markdown';
+
+/**
+ * 思考卡片 — 展示模型推理过程(流式,可折叠)
+ *
+ * 设计:
+ *   - 默认折叠:固定高度 140px,overflow hidden,mask-image 底部淡出
+ *   - 自动滚底:appendThinkingChunk 时 body.scrollTop = body.scrollHeight
+ *   - 展开:去掉高度限制和 mask,允许原生滚动
+ *   - 完成:缩小到仅头部可见(label 变 ✓ 思考完成)
+ */
+
+/** 在 msgEl 末尾创建思考卡片,返回卡片根元素 */
+export function createThinkingCard(msgEl: HTMLElement): HTMLDivElement {
+  const card = document.createElement('div');
+  card.className = 'aiagent-sdk-thinking-card';
+  card.setAttribute('role', 'status');
+  card.setAttribute('aria-label', 'AI 思考中');
+
+  // 头部
+  const head = document.createElement('div');
+  head.className = 'aiagent-sdk-thinking-head';
+
+  const dot = document.createElement('span');
+  dot.className = 'aiagent-sdk-thinking-dot';
+  dot.setAttribute('aria-hidden', 'true');
+
+  const label = document.createElement('span');
+  label.className = 'aiagent-sdk-thinking-label';
+  label.textContent = '思考中…';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'aiagent-sdk-thinking-toggle';
+  toggle.textContent = '展开';
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const expanded = card.classList.toggle('aiagent-sdk-thinking-expanded');
+    toggle.textContent = expanded ? '收起' : '展开';
+  });
+
+  head.appendChild(dot);
+  head.appendChild(label);
+  head.appendChild(toggle);
+
+  // 主体
+  const body = document.createElement('pre');
+  body.className = 'aiagent-sdk-thinking-body';
+
+  card.appendChild(head);
+  card.appendChild(body);
+  msgEl.appendChild(card);
+  msgEl.scrollTop = msgEl.scrollHeight;
+  return card;
+}
+
+/**
+ * 渲染完整思考内容(支持 markdown),自动滚到底部
+ * 流式思路:agent.ts 累加 thinkingBuf,每来一个 chunk 就用本函数全量重渲染
+ * (thinking 内容通常不超过几 KB,全量渲染性能可接受)
+ */
+export function setThinkingContent(card: HTMLElement, md: string): void {
+  if (!card) return;
+  const body = card.querySelector('.aiagent-sdk-thinking-body') as HTMLElement | null;
+  if (!body) return;
+  body.innerHTML = renderMarkdownLite(md || '');
+  decorateImages(body);
+  // 自动滚到底部 — 聚焦最新一行
+  body.scrollTop = body.scrollHeight;
+}
+
+/** 标记思考完成:label 变 ✓,触发 CSS 收起动画 */
+export function finalizeThinking(card: HTMLElement): void {
+  if (!card) return;
+  // 已完成的卡不重复处理
+  if (card.classList.contains('aiagent-sdk-thinking-done')) return;
+  card.classList.add('aiagent-sdk-thinking-done');
+  const label = card.querySelector('.aiagent-sdk-thinking-label') as HTMLElement | null;
+  if (label) label.textContent = '✓ 思考完成';
+  // 如果展开过,先收起
+  card.classList.remove('aiagent-sdk-thinking-expanded');
+  const toggle = card.querySelector('.aiagent-sdk-thinking-toggle') as HTMLElement | null;
+  if (toggle) toggle.textContent = '展开';
+}

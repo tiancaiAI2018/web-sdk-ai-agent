@@ -9,6 +9,9 @@ export {
   markToolCardSuccess,
   markToolCardError,
   jsonToHighlightedHtml,
+  createThinkingCard,
+  setThinkingContent,
+  finalizeThinking,
 } from './iridescent';
 
 // 兼容旧引用(message.ts 早期版本用过 createToolCallEl)

@@ -10,7 +10,9 @@ import com.example.agent.session.SessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.Event;
+import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
+import io.agentscope.core.message.ThinkingBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
@@ -34,6 +36,7 @@ import java.security.NoSuchAlgorithmException;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
+import java.util.Objects;
 
 /**
  * Two endpoints:
@@ -171,8 +174,8 @@ public class ChatController {
     private Flux<ServerSentEvent<String>> toSse(Event event, AuthPrincipal p,
                                                 String sessionId, String ip,
                                                 java.util.concurrent.atomic.AtomicBoolean lastEmitted) {
+
         Msg msg = event.getMessage();
-        String text = msg == null || msg.getTextContent() == null ? "" : msg.getTextContent();
 
         // isLast 帧去重:AgentScope 1.0.12 会在流末尾推多个 isLast=true,只让第一个推 id:last
         boolean isLastForReal = event.isLast() && lastEmitted.compareAndSet(false, true);
@@ -180,6 +183,23 @@ public class ChatController {
             return Flux.empty();
         }
 
+        // === ThinkingBlock 优先 — 思考与文本互斥,ThinkingBlock 存在就是思考帧 ===
+        if (msg != null) {
+            String thinking = extractThinking(msg);
+            if (thinking != null) {
+                // 有 ThinkingBlock 就一定发 thinking 帧(即使内容是空串或空格)
+                ServerSentEvent<String> thinkingEvent = ServerSentEvent.<String>builder()
+                    .event("thinking")
+                    .id(isLastForReal ? "last" : null)
+                    .data(thinking.replace("\n", "\\n").replace("\r", ""))
+                    .build();
+                return Flux.just(thinkingEvent);
+            }
+        }
+
+        // === 无思考内容 — 走普通 reasoning 帧 ===
+        // msg.getTextContent 只取 TextBlock 文本
+        String text = msg == null || msg.getTextContent() == null ? "" : msg.getTextContent();
         String type = event.getType().name().toLowerCase();
         ServerSentEvent<String> main = ServerSentEvent.<String>builder()
             .event(type)
@@ -190,6 +210,7 @@ public class ChatController {
             .build();
 
         if (msg == null) return Flux.just(main);
+
         List<ToolUseBlock> toolUses;
         try {
             toolUses = msg.getContentBlocks(ToolUseBlock.class);
@@ -224,6 +245,26 @@ public class ChatController {
             .data(data)
             .build();
         return Flux.just(main, toolCall);
+    }
+
+    /**
+     * 从 Msg 中提取 ThinkingBlock 的思考文本。
+     * @return 思考文本(可能为空串);无 ThinkingBlock 时返回 null
+     */
+    private static String extractThinking(Msg msg) {
+        try {
+            List<ThinkingBlock> blocks =
+                msg.getContentBlocks(ThinkingBlock.class);
+            if (blocks != null && !blocks.isEmpty()) {
+                return blocks.stream()
+                    .map(ThinkingBlock::getThinking)
+                    .filter(Objects::nonNull)  // 只过滤 null getThinking(),保留空串和空格
+                    .collect(java.util.stream.Collectors.joining("\n"));
+            }
+        } catch (Exception ignored) {
+            // ThinkingBlock 不在 classpath 或提取失败
+        }
+        return null;
     }
 
     private static String sha256Short(String s) {

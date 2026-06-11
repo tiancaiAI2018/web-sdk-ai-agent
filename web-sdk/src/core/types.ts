@@ -110,6 +110,7 @@ export interface StreamOptions {
   onDone?: () => void;
   onError?: (e: Error) => void;
   onToolCall?: (parsed: ToolCallPayload) => void;
+  onThinking?: (text: string) => void;
   activeTools?: string[];
 }
 
