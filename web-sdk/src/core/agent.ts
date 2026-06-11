@@ -54,9 +54,14 @@ import { applyTheme, DEFAULT_THEME } from '../ui/theme';
 import { appendMessage, createMessageEl } from '../ui/components/message';
 import {
   appendTyping,
+  clearTypingParticles,
   markTypingActive,
   unmarkTypingActive,
 } from '../ui/components/typing';
+import {
+  markToolCardSuccess,
+  updateToolCardProgress,
+} from '../ui/components/tool-card';
 import type {
   AIAgentOptions,
   Message,
@@ -107,7 +112,7 @@ export class AIAgent {
     subtitle: string;
     placeholder: string;
     welcomeMessage: string;
-    theme: 'light' | 'dark';
+    theme: 'ink' | 'paper' | 'dark' | 'light';
     position: 'bottom-right' | 'bottom-left';
     autoOpen: boolean;
     avatar: string;
@@ -128,6 +133,8 @@ export class AIAgent {
   _extractOnCall: ((payload: Record<string, unknown>) => unknown) | null = null;
   _pendingToolCall: PendingToolCall | null = null;
   _demoSessionId: string | null = null;
+  /** 最近一张工具调用卡片的根元素(供 _postToolResult 标记成功/失败用) */
+  _lastToolCard: HTMLElement | null = null;
 
   // ====================================================================
   // 公共入口
@@ -148,7 +155,7 @@ export class AIAgent {
         opts.placeholder || '输入消息,Enter 发送,Shift+Enter 换行',
       welcomeMessage:
         opts.welcomeMessage || '你好!我是 AI 助手,有什么可以帮你的?',
-      theme: opts.theme || 'light',
+      theme: opts.theme || 'ink',
       position: opts.position || 'bottom-right',
       autoOpen: !!opts.autoOpen,
       avatar: opts.avatar || '🤖',
@@ -170,6 +177,12 @@ export class AIAgent {
     this._widget.mount();
 
     if (this._opts.autoOpen) this.open();
+
+    // 欢迎区(专属 UI,不是消息):init 后显示在 messages 之上
+    // 用户发第一条消息后会自动 hideWelcome
+    if (this._opts.welcomeMessage) {
+      this._widget.setWelcome(this._opts.welcomeMessage);
+    }
 
     // 启动时扫 sessionStorage 续传上次未提交的 tool result(异步,不影响 init)
     setTimeout(() => {
@@ -293,8 +306,8 @@ export class AIAgent {
     this._isOpen = this._widget ? this._widget.getIsOpen() : false;
   }
 
-  /** 切换主题(light/dark) */
-  setTheme(opts: { theme: 'light' | 'dark' }): void {
+  /** 切换主题(ink/paper/dark/light) */
+  setTheme(opts: { theme: 'ink' | 'paper' | 'dark' | 'light' }): void {
     if (this._widget) applyTheme(this._widget, opts.theme);
   }
 
@@ -316,7 +329,10 @@ export class AIAgent {
     this._activeTools = [];
     this._extractOnCall = null;
     this._chatSessionId = null;
-    this._appendMsg('system', '新会话已开启');
+    // 新会话:重新显示 welcome 区(如果是新会话)
+    if (this._widget && this._opts.welcomeMessage) {
+      this._widget.setWelcome(this._opts.welcomeMessage);
+    }
   }
 
   /** 内部:输入栏发送 */
@@ -338,9 +354,12 @@ export class AIAgent {
    * 这样不会"页面显示少一段"。
    */
   async _sendUserMessage(text: string): Promise<void> {
+    // 用户开始对话 → 隐藏 welcome 区(它的工作已经完成)
+    if (this._widget) this._widget.hideWelcome();
     this._appendMsg('user', text);
     this._setBusy(true);
     const refs = this._widget!.getRefs()!;
+    // assistant 消息占位(内部是 5 颗粒子,等第一次 onChunk 到达时清空填文本)
     const typing = appendTyping(refs.msgEl);
     let assistantBuf = '';
     const self = this;
@@ -352,8 +371,8 @@ export class AIAgent {
     function upgradeTyping() {
       if (!replaced) {
         replaced = true;
-        typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-assistant';
-        // 流式光标:开始流后挂 active class,触发 CSS ::after 闪烁
+        // 第一次有内容到达:清空粒子 + 流式光标 active
+        clearTypingParticles(typing);
         markTypingActive(typing);
       }
     }
@@ -386,6 +405,8 @@ export class AIAgent {
         if (!submitted) self._setBusy(false);
       },
       onError: (e: Error) => {
+        // 错误时清掉粒子(占位 div 转为 system 消息)
+        clearTypingParticles(typing);
         if (replaced) {
           unmarkTypingActive(typing);
           typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
@@ -407,7 +428,14 @@ export class AIAgent {
         if (!keys.length) return;
         if (submitted) return; // 一个 stream 内只处理第一次"完整"调用
         submitted = true;
+        // 添加工具调用卡片(油彩终端);保存引用供后续更新进度
         self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args });
+        // 找到刚加的卡片(最新一张 .aiagent-sdk-tool-card)
+        const cards = refs.msgEl.querySelectorAll('.aiagent-sdk-tool-card');
+        self._lastToolCard = cards.length ? (cards[cards.length - 1] as HTMLElement) : null;
+        if (self._lastToolCard) {
+          updateToolCardProgress(self._lastToolCard, 30, '执行中…');
+        }
         // 调本地 onCall 拿 result
         let toolResult: unknown;
         const localTool = self._getLocalTool(
@@ -431,9 +459,12 @@ export class AIAgent {
             console.error('[AIAgent SDK] extract onCall threw:', e);
           }
         }
+        if (self._lastToolCard) {
+          updateToolCardProgress(self._lastToolCard, 60, '提交结果…');
+        }
         // 把 result 回传后端,触发 LLM 看到结果后继续(官方 TOOL 恢复模式)
         if (parsed.id) {
-          await self._postToolResult(parsed.id, toolResult);
+          await self._postToolResult(parsed.id, toolResult, self._lastToolCard);
         }
       },
     };
@@ -559,9 +590,13 @@ export class AIAgent {
   // ====================================================================
 
   /** 暴露一个 postToolResult 包装,供 _sendUserMessage 的 onToolCall 调 */
-  async _postToolResult(toolUseId: string, result: unknown): Promise<void> {
+  async _postToolResult(
+    toolUseId: string,
+    result: unknown,
+    card?: HTMLElement | null
+  ): Promise<void> {
     const ctx = this._toolCtx();
-    return postToolResult(ctx, toolUseId, result);
+    return postToolResult(ctx, toolUseId, result, card);
   }
 
   /** 启动时续传 — 委托 tools.ts */

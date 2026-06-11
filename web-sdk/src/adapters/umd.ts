@@ -26,7 +26,11 @@
  */
 
 import { createAIAgent } from '../core/agent';
+import { loadFonts } from '../ui/fonts';
 import type { AIAgentOptions } from '../core/types';
+
+// IRIDESCENT BLOOM 主题 — 提前加载字体(Inter / JetBrains Mono / Fraunces)
+loadFonts();
 
 const factory = createAIAgent();
 
@@ -35,14 +39,14 @@ const factory = createAIAgent();
 (globalThis as unknown as { AIAgent: typeof factory }).AIAgent = factory;
 
 // 加载横幅(方便 devtools 立刻看到当前 SDK 版本,排查浏览器缓存)
-const sdkVersion = '4.0.0';
+const sdkVersion = '5.0.0';
 const sdkBuiltAt = '__BUILD_TIME__'; // 打包时由 vite 替换为 ISO 时间戳
 // eslint-disable-next-line no-console
 console.info(
   `%c[AIAgent SDK v${sdkVersion}]%c loaded (built ${sdkBuiltAt}). ` +
-    `AIAgent.init({...}) is on window.`,
-  'background:#3b82f6;color:#fff;padding:2px 6px;border-radius:3px;font-weight:600',
-  'color:#6b7280'
+    `Theme: Iridescent Bloom. AIAgent.init({...}) is on window.AIAgent.`,
+  'background:linear-gradient(135deg,#5eead4,#a78bfa,#f0abfc);color:#050505;padding:2px 8px;border-radius:3px;font-weight:700',
+  'color:#a1a1aa'
 );
 
 export default factory;

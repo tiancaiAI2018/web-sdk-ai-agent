@@ -14,11 +14,11 @@ import { AIAgentWidget } from 'aiagent-sdk/react';
 function App() {
   return (
     <>
-      <h1>React 接入 demo (v4 工程化版)</h1>
+      <h1>React 接入 demo (v5 IRIDESCENT BLOOM)</h1>
       <p>
-        本页面演示 <strong>React + ESM 模式</strong>接入 SDK。右下角的 🤖 气泡
+        本页面演示 <strong>React + ESM 模式</strong>接入 SDK。右下角的 🌈 虹彩核心气泡
         由 <code>&lt;AIAgentWidget/&gt;</code> 自动渲染 —— React 组件本身 <code>return null</code>,
-        浮窗由 SDK 内部挂到 <code>document.body</code>。
+        浮窗由 SDK 内部挂到 <code>document.body</code>。主题:<code>ink</code>(OLED 黑底 + 虹彩油彩)。
       </p>
 
       <div className="form-area">
@@ -64,10 +64,10 @@ function App() {
           return await r.json();
         }}
         title="AI 助手"
-        subtitle="点我开始聊天"
-        welcomeMessage={'你好!我是 AI 助手,可以直接跟我聊天,或者点浮窗右上角 📋 按钮开启"录单模式"。凑齐字段后我会调 submit_form 把数据推到本页面的订单表单,同时 AI 会看到回执并生成确认文案。'}
+        subtitle="Iridescent Bloom"
+        welcomeMessage={'你好!我是 AI 助手(IRIDESCENT BLOOM 主题)。可以直接跟我聊天,或点浮窗右上角 ⊕ 按钮开启"录单模式"。凑齐字段后我会调 submit_form 把数据推到本页面的订单表单。'}
         placeholder="输入消息,Enter 发送,Shift+Enter 换行"
-        theme="light"
+        theme="ink"
         position="bottom-right"
         clientPrefix="react-demo"
         demoTools

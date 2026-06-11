@@ -19,6 +19,11 @@ import {
   markTypingActive,
   unmarkTypingActive,
 } from '../ui/components/typing';
+import {
+  markToolCardSuccess,
+  markToolCardError,
+  updateToolCardProgress,
+} from '../ui/components/tool-card';
 import type {
   LocalTool,
   PendingToolCall,
@@ -218,6 +223,8 @@ export interface ToolCtx {
  * 后端用官方模式 agent.call(toolResultMsg) 恢复 TOOL_SUSPENDED 状态,
  * 把 LLM 的确认回复以 SSE 流式推回。SDK 端按新消息渲染。
  *
+ * `card` 可选:本轮工具调用的油彩终端卡根元素,2xx 时标记完成。
+ *
  * 可靠性:
  *   - 先持久化 pending 到 sessionStorage,刷新页面后能续传
  *   - 5xx / 429 / 网络错误 指数退避(500/1000/2000ms,共 4 次)
@@ -227,7 +234,8 @@ export interface ToolCtx {
 export async function postToolResult(
   ctx: ToolCtx,
   toolUseId: string,
-  result: unknown
+  result: unknown,
+  card?: HTMLElement | null
 ): Promise<void> {
   if (!toolUseId) return;
   const sessionId = ctx.getSessionId();
@@ -254,7 +262,7 @@ export async function postToolResult(
     return;
   }
 
-  await _postToolResultInner(ctx, toolUseId, result, sessionId, token);
+  await _postToolResultInner(ctx, toolUseId, result, sessionId, token, card);
 }
 
 async function _postToolResultInner(
@@ -262,7 +270,8 @@ async function _postToolResultInner(
   toolUseId: string,
   result: unknown,
   sessionId: string,
-  token: string
+  token: string,
+  card?: HTMLElement | null
 ): Promise<void> {
   const url =
     ctx.endpoint + '/chat/' + encodeURIComponent(sessionId) + '/tools/result';
@@ -302,6 +311,7 @@ async function _postToolResultInner(
       await ctx.sleep(backoff);
       backoff *= 2;
       attempt++;
+      if (card) updateToolCardProgress(card, Math.min(60 + attempt * 10, 90), '重试中…');
       continue;
     }
 
@@ -315,6 +325,7 @@ async function _postToolResultInner(
       await ctx.sleep(backoff);
       backoff *= 2;
       attempt++;
+      if (card) updateToolCardProgress(card, Math.min(60 + attempt * 10, 90), '重试中…');
       continue;
     }
     // 429:尊重 Retry-After
@@ -323,6 +334,7 @@ async function _postToolResultInner(
       await ctx.sleep(Math.max(ra * 1000, backoff));
       backoff *= 2;
       attempt++;
+      if (card) updateToolCardProgress(card, Math.min(60 + attempt * 10, 90), '限流中…');
       continue;
     }
     // 其它状态码(2xx / 4xx 非 429)直接跳出循环,不再重试
@@ -331,10 +343,12 @@ async function _postToolResultInner(
 
   // 所有重试用尽仍网络层失败
   if (fetchErr) {
+    if (card) markToolCardError(card, '✕ 网络失败');
     onToolResultFailed(ctx, sessionId, toolUseId, 'network: ' + fetchErr.message);
     return;
   }
   if (!r) {
+    if (card) markToolCardError(card, '✕ 无响应');
     onToolResultFailed(ctx, sessionId, toolUseId, 'network: no response');
     return;
   }
@@ -342,6 +356,7 @@ async function _postToolResultInner(
   // 409:后端状态机已乱(挂起池已 evict / sid 错 / ttl 过期),
   // 主动 abort 清后端 + 清本地 storage,不让用户卡住
   if (r.status === 409) {
+    if (card) markToolCardError(card, '✕ 409 冲突');
     const errText = await r.text();
     ctx.appendMsg('system', '⚠️ ' + (errText || 'session 已被工具调用占用'));
     // 主动 abort(复用当前 token)
@@ -356,9 +371,13 @@ async function _postToolResultInner(
   }
   // 4xx 其他 / 重试后仍 5xx —— 不可重试错误,挂按钮
   if (!r.ok || !r.body) {
+    if (card) markToolCardError(card, '✕ HTTP ' + r.status);
     onToolResultFailed(ctx, sessionId, toolUseId, 'http ' + r.status);
     return;
   }
+
+  // 2xx:工具结果已接收,标记油彩终端卡为"完成"(后续 SSE 是 LLM 确认)
+  if (card) markToolCardSuccess(card, '✓ 已提交');
 
   // 2xx:消耗 SSE,渲染 LLM 确认回复
   const typing = ctx.appendTyping();
@@ -441,6 +460,7 @@ export async function retryToolResult(ctx: ToolCtx): Promise<void> {
     ctx.setBusy(false);
     return;
   }
+  // 重试时无对应 card(ref 未持有);不更新进度,沿用 retry 卡片
   await _postToolResultInner(ctx, p.toolUseId, p.result, sid, token);
 }
 
@@ -564,3 +584,4 @@ export async function resumePendingToolResults(
   }
   await _postToolResultInner(ctx, pending.toolUseId, pending.result, sid, token);
 }
+

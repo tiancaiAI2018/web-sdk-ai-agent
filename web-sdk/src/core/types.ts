@@ -33,11 +33,18 @@ export interface AIAgentOptions {
   subtitle?: string;
   placeholder?: string;
   welcomeMessage?: string;
-  theme?: 'light' | 'dark';
+  theme?: 'ink' | 'paper' | 'dark' | 'light';
   position?: 'bottom-right' | 'bottom-left';
   autoOpen?: boolean;
   avatar?: string;
   clientPrefix?: string;
+  /**
+   * 主题(默认 'ink')。
+   *  - 'ink'   :OLED 黑底 + 虹彩油彩(推荐,毛玻璃 + 油彩在深色下最出彩)
+   *  - 'paper' :暖米底 + 油彩(适合亮色宿主页)
+   *  - 'dark'  :'ink' 的别名(向后兼容,推荐用 'ink')
+   *  - 'light' :'paper' 的别名(向后兼容,推荐用 'paper')
+   */
   /** 启用 demo 工具(浮窗出 📋 录单按钮 + init 时后台自动注册 demoOrderTools) */
   demoTools?: boolean;
   /** 自定义"录单"工具列表。demoTools=true 但未传 → 用 SDK 内置默认 schema。 */

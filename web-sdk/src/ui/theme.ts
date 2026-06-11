@@ -1,17 +1,22 @@
 /**
- * 主题 / 设计令牌 —— Phase A 阶段仅做主题切换(class 切换 + setTheme 入口),
- * Phase C 阶段会在这里引入 CSS 变量 + 6 项动画 polish。
+ * 主题 / 设计令牌 —— IRIDESCENT BLOOM
  *
- * 当前实现:由 Widget.setTheme('light' | 'dark') 切换 .aiagent-sdk-theme-dark
- * class(沿用原 SDK 行为)。
+ * 主题名:
+ *   - 'ink'   :OLED 黑底 + 虹彩油彩(默认,毛玻璃 + 油彩在深色下最出彩)
+ *   - 'paper' :暖米底 + 油彩(适合亮色宿主页)
+ *   - 'dark'  :'ink' 的别名(向后兼容,推荐用 'ink')
+ *   - 'light' :'paper' 的别名(向后兼容,推荐用 'paper')
+ *
+ * 切换走 host.setAttribute('data-theme', theme) + CSS 变量覆盖。
+ * 视觉细节(面板 28px 毛玻璃、4 角油彩、油彩终端卡、粒子思考)全部在 styles.ts。
  */
 
 import type { Widget } from './widget';
 
-export type ThemeName = 'light' | 'dark';
+export type ThemeName = 'ink' | 'paper' | 'dark' | 'light';
 
 export function applyTheme(widget: Widget, theme: ThemeName): void {
   widget.setTheme(theme);
 }
 
-export const DEFAULT_THEME: ThemeName = 'light';
+export const DEFAULT_THEME: ThemeName = 'ink';
