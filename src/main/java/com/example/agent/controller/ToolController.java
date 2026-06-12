@@ -27,6 +27,7 @@ import java.util.Map;
  *
  * <ul>
  *   <li>POST /chat/{sid}/tools/register    全量替换该 sid 的工具集</li>
+ *   <li>POST /chat/{sid}/tools/append      追加工具到该 sid(不清空已有)</li>
  *   <li>POST /chat/{sid}/tools/unregister  删指定 name;空 = 全清</li>
  *   <li>GET  /chat/{sid}/tools             返元信息(不返 parameters)</li>
  * </ul>
@@ -59,10 +60,27 @@ public class ToolController {
         }
         AuthPrincipal p = principalOf(exchange);
         String ip = AuditService.extractIp(exchange.getRequest());
-        // registry.register 内部会调 DescriptionGuard + 字段名校验,失败抛 IAE
         List<String> registered = registry.register(sessionId, body.tools());
         audit.logToolRegister(p.clientId(), p.jti(), sessionId, registered, ip);
         return Mono.just(ResponseEntity.ok(Map.of("registered", registered)));
+    }
+
+    @PostMapping("/append")
+    @Operation(summary = "追加工具(不清空已有)",
+        description = "追加工具到该 sessionId,不清空已有工具。同名工具覆盖更新。"
+                   + "用于 SDK 临时工具场景:持久工具先 register,临时工具再 append。")
+    public Mono<ResponseEntity<Map<String, Object>>> append(
+            @PathVariable String sessionId,
+            @RequestBody RegisterRequest body,
+            ServerWebExchange exchange) {
+        if (body == null || body.tools() == null || body.tools().isEmpty()) {
+            return Mono.error(new IllegalArgumentException("tools must not be empty"));
+        }
+        AuthPrincipal p = principalOf(exchange);
+        String ip = AuditService.extractIp(exchange.getRequest());
+        List<String> appended = registry.append(sessionId, body.tools());
+        audit.logToolRegister(p.clientId(), p.jti(), sessionId, appended, ip);
+        return Mono.just(ResponseEntity.ok(Map.of("appended", appended)));
     }
 
     @PostMapping("/unregister")

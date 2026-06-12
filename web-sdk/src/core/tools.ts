@@ -126,6 +126,36 @@ export async function registerRemote(
   return await r.json();
 }
 
+/** 追加工具到后端(不清空已有),用于临时工具场景 */
+export async function appendRemote(
+  endpoint: string,
+  token: string,
+  sessionId: string,
+  tools: Array<{
+    name: string;
+    description: string;
+    parameters: Record<string, unknown>;
+    strict: boolean;
+  }>
+): Promise<unknown> {
+  const r = await fetch(
+    endpoint + '/chat/' + encodeURIComponent(sessionId) + '/tools/append',
+    {
+      method: 'POST',
+      headers: {
+        Authorization: 'Bearer ' + token,
+        'Content-Type': 'application/json',
+      },
+      body: JSON.stringify({ tools }),
+    }
+  );
+  if (!r.ok) {
+    const txt = await r.text();
+    throw new Error('append failed: ' + r.status + ' ' + txt);
+  }
+  return await r.json();
+}
+
 export async function unregisterRemote(
   endpoint: string,
   token: string,

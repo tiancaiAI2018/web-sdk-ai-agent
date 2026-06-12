@@ -11,7 +11,7 @@
 // init 选项
 // ====================================================================
 
-/** 第三方自定义的"录单"工具 schema,传给 demoTools/demoOrderTools。 */
+/** 第三方自定义的工具 schema,传给 persistentTools 或 addEphemeralTools。 */
 export interface ToolDef {
   name: string;
   description?: string;
@@ -45,10 +45,14 @@ export interface AIAgentOptions {
    *  - 'dark'  :'ink' 的别名(向后兼容,推荐用 'ink')
    *  - 'light' :'paper' 的别名(向后兼容,推荐用 'paper')
    */
-  /** 启用 demo 工具(浮窗出 📋 录单按钮 + init 时后台自动注册 demoOrderTools) */
-  demoTools?: boolean;
-  /** 自定义"录单"工具列表。demoTools=true 但未传 → 用 SDK 内置默认 schema。 */
-  demoOrderTools?: ToolDef[];
+  /** 持久工具列表。每个新会话自动注入,生命周期跟 agent 实例。 */
+  persistentTools?: ToolDef[];
+  /**
+   * 内置工具开关。控制 SDK 预制工具(如 changeSkin)是否启用。
+   * 不传或 undefined = 全部启用;显式传 false 可关闭指定内置工具。
+   * 示例:builtinTools: { changeSkin: false } 关闭换肤工具。
+   */
+  builtinTools?: { changeSkin?: boolean };
   /**
    * 皮肤名。可选:
    *   - 'iridescent-bloom' (默认,油彩/毛玻璃)
@@ -142,15 +146,6 @@ export interface StreamOptions {
   onToolCallEnd?: (parsed: ToolCallEndPayload) => void;
   onThinking?: (text: string) => void;
   activeTools?: string[];
-}
-
-export interface StartExtractOptions {
-  sessionId?: string;
-  tools?: ToolDef[];
-  activeTools?: string[];
-  initialMessage?: string;
-  /** 直接兼容旧 `onFormSubmit` 命名(host-page.html 老 demo 用的字段) */
-  onFormSubmit?: (payload: Record<string, unknown>) => unknown;
 }
 
 // ====================================================================

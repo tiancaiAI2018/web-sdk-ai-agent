@@ -61,3 +61,4 @@ examples/node_modules/
 *.pid
 **/node_modules/
 
+io/**

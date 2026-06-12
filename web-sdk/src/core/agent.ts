@@ -12,8 +12,6 @@
  *   agent.registerTools({...}) // 工具注册
  *   agent.unregisterTools({...})
  *   agent.listTools({...})
- *   agent.startExtractSession({...})
- *   agent.stopExtractSession()
  *   agent.open() / .close() / .toggle()
  *   agent.setTheme({theme:'dark'})
  *   agent.destroy()
@@ -35,6 +33,7 @@ import {
 import {
   ToolsRegistry,
   registerRemote,
+  appendRemote,
   unregisterRemote,
   listRemote,
   postAbort,
@@ -43,12 +42,6 @@ import {
   resumePendingToolResults,
   type ToolCtx,
 } from './tools';
-import {
-  toggleExtractMode,
-  startExtractSession,
-  stopExtractSession,
-  type ExtractCtx,
-} from './extract';
 import { Widget } from '../ui/widget';
 import { applyTheme, DEFAULT_THEME } from '../ui/theme';
 import { Skin, SkinRegistry } from './skin';
@@ -80,7 +73,6 @@ import type {
   RegisterToolsOptions,
   UnregisterToolsOptions,
   ListToolsOptions,
-  StartExtractOptions,
   ToolDef,
   ToolCallPayload,
   ToolCallDeltaPayload,
@@ -88,28 +80,6 @@ import type {
   ToolCallEndPayload,
   MessageRole,
 } from './types';
-
-// 默认 demoOrderTools(原文件 189-207)
-const DEFAULT_DEMO_TOOLS: ToolDef[] = [
-  {
-    name: 'submit_form',
-    description:
-      'Submit the collected order fields. Call only when ALL required fields are collected.',
-    parameters: {
-      type: 'object',
-      properties: {
-        orderId: { type: 'string', description: '订单编号,如 PO-2024-001' },
-        customerName: { type: 'string', description: '客户全名' },
-        customerPhone: { type: 'string', description: '11 位手机号' },
-        items: { type: 'string', description: '商品清单' },
-        totalAmount: { type: 'number', description: '订单总金额,单位元' },
-        notes: { type: 'string', description: '其他备注' },
-      },
-      required: ['orderId', 'customerName', 'items', 'totalAmount'],
-    },
-    strict: true,
-  },
-];
 
 /**
  * 换肤快照:扫描 msgEl 里的卡 → 结构化数据 → 新 mount 后重放
@@ -137,7 +107,7 @@ export class AIAgent {
     accessToken: string;
     refreshToken?: string;
   }>;
-  /** 公共字段:host-page.html 第 114 行读 agent._opts.demoOrderTools */
+  /** 公共字段:宿主页面可读 agent._opts */
   _opts!: {
     title: string;
     subtitle: string;
@@ -148,8 +118,9 @@ export class AIAgent {
     autoOpen: boolean;
     avatar: string;
     clientPrefix: string;
-    demoTools: boolean;
-    demoOrderTools: ToolDef[];
+    persistentTools: ToolDef[];
+    /** 内置工具开关 */
+    builtinTools: { changeSkin?: boolean };
     /** 皮肤名(iridescent-bloom / classic / 自定义) */
     skin: string;
   };
@@ -164,6 +135,17 @@ export class AIAgent {
   _chatSessionId: string | null = null;
   _activeTools: string[] = [];
   /**
+   * 持久工具:init 时传入的 persistentTools + 内置工具(如 changeSkin)。
+   * 本地缓存,不立即调 Register 接口;每个新会话首次发消息时自动注入。
+   * 生命周期跟 agent 实例,新会话不会丢失。
+   */
+  _persistentTools: ToolDef[] = [];
+  /**
+   * 临时工具:通过 addEphemeralTools 追加的,仅当前会话生效。
+   * 新会话时自动清空,不会跨会话残留。
+   */
+  _ephemeralTools: ToolDef[] = [];
+  /**
    * 内置待注册工具 — 静态 list,接受 registerBuiltinTool 的工具定义。
    * 用户首次 _sendUserMessage 时,SDK 自动把这份 list 里所有工具
    * 注册到 chat session 的 sid 下(后端 schema + 本地 _tools onCall 同步)。
@@ -171,9 +153,7 @@ export class AIAgent {
    * 不能用 demo session 的 sid —— 否则主对话 stream 看不到工具。
    */
   static _builtinTools: ToolDef[] = [];
-  _extractOnCall: ((payload: Record<string, unknown>) => unknown) | null = null;
   _pendingToolCall: PendingToolCall | null = null;
-  _demoSessionId: string | null = null;
   /** 最近一张工具调用卡片的根元素(供 _postToolResult 标记成功/失败用) */
   _lastToolCard: HTMLElement | null = null;
   /** 当前流式思考卡片的根元素(供 onThinking 追加用) */
@@ -209,8 +189,8 @@ export class AIAgent {
       autoOpen: !!opts.autoOpen,
       avatar: opts.avatar || '🤖',
       clientPrefix: opts.clientPrefix || 'app',
-      demoTools: !!opts.demoTools,
-      demoOrderTools: opts.demoOrderTools || DEFAULT_DEMO_TOOLS,
+      persistentTools: opts.persistentTools || [],
+      builtinTools: opts.builtinTools || {},
       skin: opts.skin || 'iridescent-bloom',
     };
 
@@ -219,7 +199,6 @@ export class AIAgent {
       onSend: () => this._onSend(),
       onNew: () => this._newSession(),
       onClose: () => this.close(),
-      onToggleExtract: () => this._toggleExtractMode(),
       onPanelOpen: () => {
         /* no-op,保留钩子 */
       },
@@ -240,17 +219,9 @@ export class AIAgent {
       void this._resumePendingToolResults();
     }, 0);
 
-    // demoTools 模式:init 后台异步注册 demo 工具组
-    if (this._opts.demoTools) {
-      this._demoSessionId = this._opts.clientPrefix + ':demo';
-      this._internalRegister(this._demoSessionId, this._opts.demoOrderTools)
-        .then(() => {
-          /* ok */
-        })
-        .catch((e) => {
-          console.warn('[AIAgent SDK] demo tools register failed:', e);
-        });
-    }
+    // ===== 两层工具模型 =====
+    // 持久工具:本地缓存,不立即调 Register 接口;新会话首次发消息时自动注入
+    this._persistentTools = this._opts.persistentTools.slice();
 
     return this;
   }
@@ -300,48 +271,126 @@ export class AIAgent {
     return registerRemote(this.endpoint, token, sessionId, schemaOnly);
   }
 
+  /** 内部:追加工具到 _tools + 后端 append(不清空已有) */
+  private async _internalAppend(
+    sessionId: string,
+    toolDefs: ToolDef[]
+  ): Promise<unknown> {
+    const schemaOnly = this._tools.register(sessionId, toolDefs);
+    const token = await this._ensureToken();
+    return appendRemote(this.endpoint, token, sessionId, schemaOnly);
+  }
+
   /**
-   * 把 AIAgent._builtinTools 里所有工具注册到 chat session(用户首次 stream 时调一次)。
-   * 关键:用 _chatSessionId 跟 _sendUserMessage 里发 stream 用同一个 sid,
-   *   这样后端 LLM 在该 stream 里能看到这些工具,SDK 端 _getLocalTool 也能找到 onCall。
-   * 不 await —— _sendUserMessage 不能因为 register 失败而阻塞(stream 本体更重要,
-   *   失败仅 warn,跟 demo tools 的 catch 风格一致)。
+   * 新会话首次发消息时调用:把持久工具 + 内置工具 + 临时工具 一起注册到 chat session。
+   * 流程:先 registerRemote 注册持久工具(全量),再 appendRemote 追加临时工具。
+   * 内置工具(changeSkin 等)根据 builtinTools 配置过滤后合并到持久工具。
    */
-  private _registerBuiltinToolsForChatSession(sid: string): void {
-    if (AIAgent._builtinTools.length === 0) return;
-    this._internalRegister(sid, AIAgent._builtinTools.slice())
-      .then(() => {
-        for (const t of AIAgent._builtinTools) {
+  private async _syncToolsForSession(sid: string): Promise<void> {
+    // 收集持久工具:init 的 persistentTools
+    const persistent = this._persistentTools.slice();
+
+    // 收集内置工具,根据 builtinTools 配置过滤
+    const builtinCfg = this._opts.builtinTools;
+    for (const t of AIAgent._builtinTools) {
+      // changeSkin 工具:默认启用,显式传 false 关闭
+      if (t.name === 'change_skin' && builtinCfg && builtinCfg.changeSkin === false) {
+        continue;
+      }
+      persistent.push(t);
+    }
+
+    // 1) 全量注册持久工具
+    if (persistent.length > 0) {
+      try {
+        await this._internalRegister(sid, persistent);
+        for (const t of persistent) {
           if (this._activeTools.indexOf(t.name) < 0) {
             this._activeTools.push(t.name);
           }
         }
         console.log(
-          '[AIAgent SDK 🧰 内置工具已注册到 chat session]',
-          AIAgent._builtinTools.map((t) => t.name).join(', ')
+          '[AIAgent SDK 🧰 持久工具已注册到 chat session]',
+          persistent.map((t) => t.name).join(', ')
         );
-      })
-      .catch((e) => {
-        console.warn('[AIAgent SDK] builtin tools register failed:', e);
-      });
+      } catch (e) {
+        console.warn('[AIAgent SDK] persistent tools register failed:', e);
+      }
+    }
+
+    // 2) 追加临时工具(不清空持久工具)
+    if (this._ephemeralTools.length > 0) {
+      try {
+        await this._internalAppend(sid, this._ephemeralTools);
+        for (const t of this._ephemeralTools) {
+          if (this._activeTools.indexOf(t.name) < 0) {
+            this._activeTools.push(t.name);
+          }
+        }
+        console.log(
+          '[AIAgent SDK 🧰 临时工具已追加到 chat session]',
+          this._ephemeralTools.map((t) => t.name).join(', ')
+        );
+      } catch (e) {
+        console.warn('[AIAgent SDK] ephemeral tools append failed:', e);
+      }
+    }
+  }
+
+  /**
+   * 追加临时工具。仅当前会话生效,新会话自动清空。
+   * 如果当前已有会话,立即追加到后端;否则存入 _ephemeralTools,下次新会话时自动注册。
+   */
+  async addEphemeralTools(tools: ToolDef[]): Promise<void> {
+    if (!tools || !tools.length) return;
+    // 存入本地临时工具列表
+    for (const t of tools) {
+      // 去重:同名覆盖
+      this._ephemeralTools = this._ephemeralTools.filter((e) => e.name !== t.name);
+      this._ephemeralTools.push(t);
+    }
+    // 如果当前已有会话,立即追加到后端
+    if (this._chatSessionId) {
+      try {
+        await this._internalAppend(this._chatSessionId, tools);
+        for (const t of tools) {
+          if (this._activeTools.indexOf(t.name) < 0) {
+            this._activeTools.push(t.name);
+          }
+        }
+        console.log(
+          '[AIAgent SDK 🧰 临时工具已追加到当前会话]',
+          tools.map((t) => t.name).join(', ')
+        );
+      } catch (e) {
+        console.warn('[AIAgent SDK] ephemeral tools append failed:', e);
+      }
+    }
+  }
+
+  /**
+   * 移除指定临时工具。仅影响 _ephemeralTools 本地列表 + 后端 unregister。
+   * 不影响持久工具。
+   */
+  async removeEphemeralTools(names: string[]): Promise<void> {
+    if (!names || !names.length) return;
+    this._ephemeralTools = this._ephemeralTools.filter((t) => !names.includes(t.name));
+    // 从 _activeTools 移除
+    this._activeTools = this._activeTools.filter((n) => !names.includes(n));
+    // 如果当前有会话,从后端也移除
+    if (this._chatSessionId) {
+      try {
+        const token = await this._ensureToken();
+        await unregisterRemote(this.endpoint, token, this._chatSessionId, names);
+      } catch (e) {
+        console.warn('[AIAgent SDK] ephemeral tools remove failed:', e);
+      }
+    }
   }
 
   /** 内部:本地查 tool 定义 */
   _getLocalTool(sessionId: string, name: string) {
     return this._tools.get(sessionId, name);
-  }
-
-  // ====================================================================
-  // 公共 API — 录单
-  // ====================================================================
-
-  startExtractSession(opts: StartExtractOptions): void {
-    const ctx = this._extractCtx();
-    startExtractSession(ctx, opts);
-  }
-
-  stopExtractSession(): void {
-    stopExtractSession(this._extractCtx());
   }
 
   /**
@@ -362,11 +411,6 @@ export class AIAgent {
       (t) => t.name !== tool.name
     );
     AIAgent._builtinTools.push(tool);
-  }
-
-  /** 浮窗 📋 按钮 */
-  private _toggleExtractMode(): void {
-    toggleExtractMode(this._extractCtx());
   }
 
   // ====================================================================
@@ -593,10 +637,11 @@ export class AIAgent {
     if (this._widget) this._widget.clearMessages();
     this._messages = [];
     this._activeTools = [];
-    this._extractOnCall = null;
     this._chatSessionId = null;
     this._thinkingCard = null;
     this._pendingDelta.clear();
+    // 临时工具仅当前会话生效,新会话清空;持久工具保留
+    this._ephemeralTools = [];
     // 新会话:重新显示 welcome 区(如果是新会话)
     if (this._widget && this._opts.welcomeMessage) {
       this._widget.setWelcome(this._opts.welcomeMessage);
@@ -730,7 +775,6 @@ export class AIAgent {
     let thinkingBuf = '';
     const self = this;
     const activeSnapshot = this._activeTools.slice();
-    const onCallSnapshot = this._extractOnCall;
     let submitted = false;
 
     // 共用 lifecycle 工厂:onChunk / onDone / onError 跟 _postToolResultInner 完全同源
@@ -880,8 +924,7 @@ export class AIAgent {
         const hasOnCall = !!(localTool && localTool.onCall);
         console.log('[AIAgent SDK 🔍 onToolCall 决策]',
           'sid=', self._chatSessionId, 'tool=', parsed.tool,
-          'localTool=', !!localTool, 'hasOnCall=', hasOnCall,
-          'onCallSnapshot=', !!onCallSnapshot);
+          'localTool=', !!localTool, 'hasOnCall=', hasOnCall);
         if (!hasOnCall) {
           // 没有可执行体 → 必须用户确认(addConfirmActions 内部已把 status 设"✓ 已确认"或"✕ 已取消")
           const ok = await addConfirmActions(card);
@@ -904,15 +947,6 @@ export class AIAgent {
             console.error('[AIAgent SDK] onCall threw:', e);
             self._appendMsg('system', '⚠️ onCall 失败: ' + (e as Error).message);
           }
-          // 浮窗录单模式下,onCallSnapshot 是 startExtractSession 时传进来的 onFormSubmit
-          if (onCallSnapshot && parsed.tool === 'submit_form') {
-            try {
-              const r = onCallSnapshot(parsed.args);
-              if (r != null && toolResult == null) toolResult = r;
-            } catch (e) {
-              console.error('[AIAgent SDK] extract onCall threw:', e);
-            }
-          }
         }
         if (parsed.id) {
           console.log('[AIAgent SDK 📤 POST /tools/result]', parsed.id, 'result=', toolResult);
@@ -923,9 +957,8 @@ export class AIAgent {
 
     if (!this._chatSessionId) {
       this._chatSessionId = this._opts.clientPrefix + ':user-' + Date.now();
-      // 首次 stream:把内置待注册工具 registerBuiltinTool 注册到 chat session
-      // 这一步同步做,否则本轮的 activeTools / tool_call 找不到工具
-      this._registerBuiltinToolsForChatSession(this._chatSessionId);
+      // 首次 stream:把持久工具 + 内置工具 + 临时工具 一起注册到 chat session
+      await this._syncToolsForSession(this._chatSessionId);
     }
     postOpts.sessionId = this._chatSessionId;
     postOpts.activeTools = activeSnapshot;
@@ -1125,30 +1158,6 @@ export class AIAgent {
         const refs = self._widget?.getRefs();
         return refs?.msgEl || document.createElement('div');
       },
-    };
-  }
-
-  private _extractCtx(): ExtractCtx {
-    const self = this;
-    return {
-      clientPrefix: this._opts.clientPrefix,
-      getDemoSessionId: () => self._demoSessionId,
-      getChatSessionId: () => self._chatSessionId,
-      setChatSessionId: (sid) => {
-        self._chatSessionId = sid;
-      },
-      getActiveTools: () => self._activeTools,
-      setActiveTools: (t) => {
-        self._activeTools = t;
-      },
-      getExtractOnCall: () => self._extractOnCall,
-      setExtractOnCall: (fn) => {
-        self._extractOnCall = fn;
-      },
-      hasLocalTool: (sid, name) => !!self._tools.get(sid, name),
-      registerTools: (sid, tools) => self._internalRegister(sid, tools || []),
-      sendUserMessage: (text) => self._sendUserMessage(text),
-      appendMsg: (role, text) => self._appendMsg(role, text),
     };
   }
 }

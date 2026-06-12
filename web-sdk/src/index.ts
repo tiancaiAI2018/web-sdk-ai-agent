@@ -16,6 +16,7 @@ export {
 export {
   ToolsRegistry,
   registerRemote,
+  appendRemote,
   unregisterRemote,
   listRemote,
   postAbort,
@@ -27,12 +28,6 @@ export {
   changeSkinTool,
   type ToolCtx,
 } from './core/tools';
-export {
-  toggleExtractMode,
-  startExtractSession,
-  stopExtractSession,
-  type ExtractCtx,
-} from './core/extract';
 export { Widget } from './ui/widget';
 export { applyTheme, DEFAULT_THEME } from './ui/theme';
 export type { ThemeName } from './ui/theme';
@@ -67,5 +62,4 @@ export type {
   RegisterToolsOptions,
   UnregisterToolsOptions,
   ListToolsOptions,
-  StartExtractOptions,
 } from './core/types';

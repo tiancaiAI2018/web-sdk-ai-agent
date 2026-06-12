@@ -23,7 +23,6 @@ export interface WidgetOpts {
   theme?: 'light' | 'dark' | 'paper' | 'ink';
   position?: 'bottom-right' | 'bottom-left';
   avatar?: string;
-  demoTools?: boolean;
   /** 皮肤名(从 SkinRegistry 取,默认 'iridescent-bloom') */
   skin?: string;
 }
@@ -32,7 +31,6 @@ export interface WidgetHandlers {
   onSend: () => void;
   onNew: () => void;
   onClose: () => void;
-  onToggleExtract: () => void;
   onPanelOpen: () => void;
   /**
    * 用户在浮窗点了换肤按钮(>1 个皮肤时出现)。
@@ -152,9 +150,6 @@ export class Widget {
     panel.className = 'aiagent-sdk-panel' + pos;
     // 注:data-skin / data-layout-* 属性都挂在 host 上(见上面 mount 头部),
     //   因为 CSS 的 :host([data-skin="aurora"]) 选择器只匹配 host 元素。
-    const demoToolsBtn = this.opts.demoTools
-      ? '<button class="aiagent-sdk-iconbtn aiagent-sdk-extract" title="开/关 录单模式" aria-label="录单模式">⊕</button>'
-      : '';
     // 4 角装饰:只有 skin.layout.cornerGlow=true 才生成 DOM
     const cornerHTML = this.skin.layout.cornerGlow
       ? [
@@ -188,7 +183,6 @@ export class Widget {
       '  </div>',
       '  <div class="aiagent-sdk-header-actions">',
       '    <span class="aiagent-sdk-subtitle"></span>',
-      demoToolsBtn,
       skinBtnHTML,
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-toggle-thinking" title="显示/隐藏 思考过程" aria-label="思考">🧠</button>',
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-new" title="新会话" aria-label="新会话">＋</button>',
@@ -223,15 +217,11 @@ export class Widget {
     this.welcomeEl = panel.querySelector('.aiagent-sdk-welcome') as HTMLDivElement;
     const closeBtn = panel.querySelector('.aiagent-sdk-close') as HTMLElement;
     const newBtn = panel.querySelector('.aiagent-sdk-new') as HTMLElement;
-    const extractBtn = panel.querySelector('.aiagent-sdk-extract') as HTMLElement | null;
     const thinkingBtn = panel.querySelector('.aiagent-sdk-toggle-thinking') as HTMLElement | null;
     const skinBtn = panel.querySelector('.aiagent-sdk-cycle-skin') as HTMLElement | null;
 
     closeBtn.addEventListener('click', () => this.handlers.onClose());
     newBtn.addEventListener('click', () => this.handlers.onNew());
-    if (extractBtn) {
-      extractBtn.addEventListener('click', () => this.handlers.onToggleExtract());
-    }
     if (thinkingBtn) {
       thinkingBtn.addEventListener('click', () => {
         this.panel!.classList.toggle('aiagent-sdk-thinking-hidden');

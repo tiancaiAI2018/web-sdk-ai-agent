@@ -52,6 +52,21 @@ public class ToolRegistry {
     }
 
     /**
+     * 追加工具到该 sid,不清空已有工具。同名工具覆盖更新。
+     * 用于 SDK 的"临时工具"场景:持久工具先 register,临时工具再 append,两者共存。
+     */
+    public List<String> append(String sid, List<RegisteredTool.Draft> drafts) {
+        ConcurrentHashMap<String, RegisteredTool> inner = store.computeIfAbsent(sid, k -> new ConcurrentHashMap<>());
+        List<String> appended = new ArrayList<>();
+        for (RegisteredTool.Draft d : drafts) {
+            RegisteredTool t = RegisteredTool.of(d);
+            inner.put(t.name(), t);
+            appended.add(t.name());
+        }
+        return appended;
+    }
+
+    /**
      * 删指定 name;names 为空/null = 全清。
      * @return 实际被删的名字(可能少于传入,因有些不存在)
      */

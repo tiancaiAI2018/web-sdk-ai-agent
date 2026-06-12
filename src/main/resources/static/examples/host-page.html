@@ -2,7 +2,7 @@
 <html lang="zh-CN">
 <head>
   <meta charset="utf-8" />
-  <title>第三方页面接入 AI Agent demo (v3 浮窗版)</title>
+  <title>第三方页面接入 AI Agent demo (v5 通用工具模型)</title>
   <style>
     body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 760px; margin: 40px auto; padding: 0 16px; }
     h1 { color: #1f2937; }
@@ -12,12 +12,20 @@
     .form-grid input { border: 1px solid #d1d5db; border-radius: 4px; padding: 6px 10px; font: inherit; }
     .filled { background: #d1fae5 !important; transition: background 0.6s; }
     code { background: #f3f4f6; padding: 2px 6px; border-radius: 3px; }
+    .demo-section { margin: 16px 0; padding: 12px 16px; border-left: 4px solid #3b82f6; background: #eff6ff; border-radius: 4px; }
+    .demo-section h3 { margin: 0 0 8px; color: #1d4ed8; }
+    .demo-section p { margin: 4px 0; font-size: 13px; color: #475569; }
+    .demo-section button { margin: 4px 4px 4px 0; padding: 6px 14px; border: 1px solid #93c5fd; border-radius: 4px; background: #fff; cursor: pointer; font: inherit; }
+    .demo-section button:hover { background: #dbeafe; }
+    .log-area { margin-top: 8px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; max-height: 120px; overflow-y: auto; font-size: 12px; color: #64748b; font-family: monospace; }
   </style>
 </head>
 <body>
-  <h1>第三方页面 demo (v3)</h1>
+  <h1>第三方页面 demo (v5 通用工具模型)</h1>
   <p>
-    本页面演示 <strong>浮窗机器人 SDK</strong> 的接入流程。右下角的 🤖 气泡就是 SDK 自动渲染的 UI —— <em>本页面没写一行聊天框 DOM</em>。
+    本页面演示 <strong>浮窗机器人 SDK v5</strong> 的通用工具模型:
+    <strong>持久工具</strong>(init 传入,所有会话生效) +
+    <strong>临时工具</strong>(追加注入,仅当前会话生效,新会话自动失效)。
   </p>
 
   <div class="form-area">
@@ -32,25 +40,33 @@
     </div>
   </div>
 
-  <h3>接入代码(3 行)</h3>
-  <pre><code>&lt;script src="http://your-host/sdk/ai-agent-sdk.js"&gt;&lt;/script&gt;
-&lt;script&gt;
-  const agent = AIAgent.init({
-    endpoint: 'http://localhost:8080',
-    getAccessToken: async () =&gt; {
-      const r = await fetch('http://localhost:7000/api/ai-token', { method: 'POST' });
-      return await r.json();   // { accessToken, refreshToken }
-    }
-  });
-&lt;/script&gt;</code></pre>
+  <!-- v5 工具模型演示区 -->
+  <div class="demo-section">
+    <h3>v5 通用工具模型演示</h3>
+    <p><strong>持久工具</strong>:init 时传入的 submit_form + 内置 change_skin。每个新会话自动注入,不会丢失。</p>
+    <p><strong>临时工具</strong>:点击下方按钮追加,仅当前会话生效。点"新会话"后临时工具自动失效。</p>
+    <button id="btn-add-ephemeral">追加临时工具(translate)</button>
+    <button id="btn-remove-ephemeral">移除临时工具(translate)</button>
+    <button id="btn-toggle-changeskin">切换内置 changeSkin 开关</button>
+    <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;">changeSkin: 开启 | 临时工具: 无</p>
+    <div id="log-area" class="log-area">等待操作...</div>
+  </div>
 
-  <h3>智能录单触发(本页面另加)</h3>
-  <button id="trigger-extract">点我开启智能录单</button>
-  <p class="meta" style="color:#6b7280;font-size:13px">点开后,SDK 浮窗内会进入录单模式,跟用户多轮对话,凑齐字段后调 submit_form 工具,把字段值回填到上方表单。</p>
+  <h3>对话触发</h3>
+  <button id="trigger-chat">点我打开浮窗开始对话</button>
+  <p class="meta" style="color:#6b7280;font-size:13px">打开浮窗后,直接跟 AI 对话即可。submit_form 是持久工具,模型会在对话中自动调用来回填表单。</p>
 
   <script src="http://localhost:8080/sdk/ai-agent-sdk.js"></script>
   <script>
-    // ===== 1. 浮窗 SDK 初始化(3 行接入) =====
+    var logEl = document.getElementById('log-area');
+    function log(msg) {
+      var t = new Date().toLocaleTimeString();
+      logEl.textContent = '[' + t + '] ' + msg + '\n' + logEl.textContent;
+    }
+
+    // ===== 1. 浮窗 SDK 初始化 =====
+    // v5: persistentTools 是持久工具,本地缓存,新会话首次发消息时自动注册到后端
+    var changeskinEnabled = true;
     var agent = AIAgent.init({
       endpoint: 'http://localhost:8080',
       getAccessToken: async function () {
@@ -60,15 +76,13 @@
       },
       title: 'AI 助手',
       subtitle: '点我开始聊天',
-      welcomeMessage: '你好!我是 AI 助手,可以直接跟我聊天,或者点浮窗右上角 📋 按钮开启"录单模式"。凑齐字段后我会调 submit_form 把数据推到本页面的订单表单,同时 AI 会看到回执并生成确认文案。',
+      welcomeMessage: '你好!我是 AI 助手(v5 通用工具模型)。submit_form 是持久工具,每个新会话都能用。你也可以点下方按钮追加临时工具。',
       placeholder: '输入消息,Enter 发送,Shift+Enter 换行',
       theme: 'light',
       position: 'bottom-right',
       clientPrefix: 'demo-app',
-      // v3:SDK 内部自动注册一组"submit_form"工具 + 浮窗出现 📋 录单按钮
-      demoTools: true,
-      // 自定义 submit_form 的 schema(可选;不传则用 SDK 默认)
-      demoOrderTools: [{
+      // v5:持久工具,本地缓存,新会话自动注入
+      persistentTools: [{
         name: 'submit_form',
         description: 'Submit collected order fields. Call only when all required fields are confirmed.',
         parameters: {
@@ -84,7 +98,6 @@
           required: ['orderId', 'customerName', 'items', 'totalAmount']
         },
         strict: true,
-        // v3:tool_call 时 SDK 端调的回调 —— 本 demo 把字段回填到上方表单
         onCall: function (payload) {
           Object.keys(payload).forEach(function (k) {
             var el = document.querySelector('[data-field="' + k + '"]');
@@ -94,32 +107,81 @@
               setTimeout(function () { el.classList.remove('filled'); }, 1500);
             }
           });
-          // 同步返回一个"提交回执"。SDK 会把它 POST 到 /tools/result,
-          // 后端 agent.call(toolResultMsg) 恢复,LLM 看到这条回执后再生成一句确认回复
-          // —— 这样浮窗里能看到完整的"录入 → AI 确认"两段式交互。
-          // 如果 onCall 不返回值,SDK 内部会用 "[Tool executed by client SDK; no result returned]" 占位,
-          // LLM 也能继续聊,但不会知道具体提交了啥。
           return '订单 ' + (payload.orderId || '(未填)') + ' 已提交到本系统,字段: '
             + Object.keys(payload).join(', ');
         }
-      }]
+      }],
+      // v5:内置工具开关,changeSkin 默认开启,传 false 关闭
+      builtinTools: { changeSkin: true }
     });
 
-    // ===== 1.5 注册一个"AI 可调换肤"工具(跟 submit_form 同款路径) =====
-    // SDK 提供 changeSkinTool 工厂(预制 schema),用户一行接入,onCall 内部调 agent.setSkin
-    // 产品决策在用户手里:不想给 AI 换肤能力,从下面数组删掉这一项即可
-    // SDK 内部会在用户首次发消息时,自动把此工具注册到 chat session 的 sid 下
-    // —— 不需要在 html 里手算 sid
+    // ===== 1.5 注册内置 changeSkin 工具 =====
+    // v5:内置工具跟 persistentTools 一样,属于持久工具,所有会话都生效
+    // 用户可通过 builtinTools: { changeSkin: false } 关闭
     AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
+    log('内置 changeSkin 工具已注册(持久,所有会话生效)');
 
-    // ===== 2. 备用:用 SDK API 显式启动录单(页面"开启录单"按钮) =====
-    // demoTools=true 时浮窗已自带 📋 按钮,这个是给"想用 page-level 触发"的第三方示例
-    document.getElementById('trigger-extract').addEventListener('click', function () {
+    // ===== 2. 临时工具演示 =====
+    var ephemeralAdded = false;
+
+    // 追加临时工具:仅当前会话生效,新会话自动失效
+    document.getElementById('btn-add-ephemeral').addEventListener('click', function () {
+      if (ephemeralAdded) {
+        log('临时工具 translate 已存在,跳过');
+        return;
+      }
+      agent.addEphemeralTools([{
+        name: 'translate',
+        description: 'Translate the given text to a target language. Use when user asks for translation.',
+        parameters: {
+          type: 'object',
+          properties: {
+            text:       { type: 'string', description: '要翻译的文本' },
+            targetLang: { type: 'string', description: '目标语言,如 en/zh/ja' }
+          },
+          required: ['text', 'targetLang']
+        },
+        strict: true,
+        onCall: function (payload) {
+          log('translate onCall: ' + JSON.stringify(payload));
+          return '翻译结果(模拟): [' + payload.targetLang + '] ' + payload.text;
+        }
+      }]);
+      ephemeralAdded = true;
+      updateStatus();
+      log('已追加临时工具 translate(仅当前会话生效)');
+    });
+
+    // 移除临时工具
+    document.getElementById('btn-remove-ephemeral').addEventListener('click', function () {
+      if (!ephemeralAdded) {
+        log('临时工具 translate 不存在,跳过');
+        return;
+      }
+      agent.removeEphemeralTools(['translate']);
+      ephemeralAdded = false;
+      updateStatus();
+      log('已移除临时工具 translate');
+    });
+
+    // 切换 changeSkin 开关(需要重新 init 演示,这里用状态提示)
+    document.getElementById('btn-toggle-changeskin').addEventListener('click', function () {
+      changeskinEnabled = !changeskinEnabled;
+      // 更新 _opts 配置(下次新会话时生效)
+      agent._opts.builtinTools = { changeSkin: changeskinEnabled };
+      updateStatus();
+      log('changeSkin 开关: ' + (changeskinEnabled ? '开启' : '关闭') + '(下次新会话生效)');
+    });
+
+    function updateStatus() {
+      var statusEl = document.getElementById('status-line');
+      statusEl.textContent = 'changeSkin: ' + (changeskinEnabled ? '开启' : '关闭')
+        + ' | 临时工具: ' + (ephemeralAdded ? 'translate' : '无');
+    }
+
+    // ===== 3. 打开浮窗对话 =====
+    document.getElementById('trigger-chat').addEventListener('click', function () {
       agent.open();
-      // 直接传 tools(SDK 会自动调 registerTools)
-      agent.startExtractSession({
-        tools: agent._opts.demoOrderTools  // 复用 init 时声明的工具定义
-      });
     });
   </script>
 </body>

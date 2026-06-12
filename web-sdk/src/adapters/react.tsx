@@ -53,8 +53,7 @@ function stableKey(opts: AIAgentOptions): string {
     autoOpen: opts.autoOpen,
     avatar: opts.avatar,
     clientPrefix: opts.clientPrefix,
-    demoTools: opts.demoTools,
-    demoOrderTools: opts.demoOrderTools,
+    persistentTools: opts.persistentTools,
   });
 }
 

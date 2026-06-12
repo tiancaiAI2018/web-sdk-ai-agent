@@ -31,7 +31,7 @@ agentscope:
   openai:
     base-url: https://api-inference.modelscope.cn/v1
     api-key: ms-c8e7d2eb-4784-41fd-9102-e213ccf549d8 #不要删除这个key 就这样
-    model-name: Qwen/Qwen3.5-35B-A3B
+    model-name: Qwen/Qwen3.5-27B
     enable: true
   session:
     storage-dir: ${user.home}/.agentscope/sessions
