@@ -234,24 +234,21 @@ public class SessionManager {
      * SDK 调 onCall 完成后,POST /tools/result 触发恢复。
      * 必须用 <b>同一个</b> agent 实例(挂在 {@code suspendedAgents} 里),
      * 用官方模式喂入 {@code Msg.builder().role(TOOL).content(ToolResultBlock...)}。
+     *
+     * <p>恢复后 LLM 可能再次调用工具(多步工具链),此时 agent 需要再次挂起,
+     * 逻辑跟 {@link #stream} 完全同源。
      */
     public Flux<Event> resume(String sessionId, String toolUseId, String resultText) {
         String safe = sanitize(sessionId);
         ReActAgent agent = suspendedAgents.get(safe);
         if (agent == null) {
-            // 没有挂起 → /tools/result 报 409,但文案要明确"无 pending tool call"
             log.warn("Session {} resume failed: no pending tool call (sid={}, toolUseId={})",
                 safe, safe, toolUseId);
             return Flux.error(new NoPendingToolException(safe));
         }
 
-        // 让 resume() 这次活动刷 ToolRegistry lastUsedAt,避免 30 min TTL
-        // 在 TOOL_SUSPENDED 期间把已挂起但用户停留很久的 session 误清。
         toolRegistry.touch(safe, List.of());
 
-        // 校验 toolUseId 真在 memory 里。挂起中但 id 错配(SDK 用过期 id 重试、
-        // sid 错配、stale SSE 帧)→ 报 409 mismatch,而不是塞 "external_tool"
-        // 喂 LLM 让它收到一个"它没发出过"的 tool result 后乱回。
         boolean idMatches = agent.getMemory().getMessages().stream()
             .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
             .anyMatch(u -> toolUseId.equals(u.getId()));
@@ -261,13 +258,12 @@ public class SessionManager {
             return Flux.error(new ToolUseIdMismatchException(safe, toolUseId));
         }
 
-        // 校验通过 → 反查 toolName(必命中,不再 orElse("external_tool") 兜底)
         String toolName = agent.getMemory().getMessages().stream()
             .flatMap(m -> m.getContentBlocks(ToolUseBlock.class).stream())
             .filter(u -> toolUseId.equals(u.getId()))
             .map(ToolUseBlock::getName)
             .findFirst()
-            .orElseThrow();   // 上面已校验存在,这里必不抛
+            .orElseThrow();
 
         Msg toolResult = Msg.builder()
             .role(MsgRole.TOOL)
@@ -277,18 +273,16 @@ public class SessionManager {
 
         log.debug("Session {} resuming with tool result ({} bytes)", safe,
             resultText == null ? 0 : resultText.length());
-        // 关键 race:SDK 同步 onCall 极快(host-page demo 就这场景),POST /tools/result
-        // 可能在后端上一条 stream 的 doOnComplete 跑完后**立即**到达,而 AgentScope
-        // 内部的 isRunning 标志由 Spring WebFlux 清理 subscriber 时**异步**清除,
-        // 比 doOnComplete 晚几 ms 到几十 ms。此时 agent.stream() 抛
-        // IllegalStateException("Agent is still running") → 500。
-        // 用 Flux.defer + retryWhen 做短暂重试(3 × 50ms = 最多 150ms),
-        // 避开这个窗口。其他错误照旧不重试。
+
+        // 跟 stream() 完全同源的挂起检测:恢复后 LLM 可能再次调工具
+        AtomicBoolean reSuspended = new AtomicBoolean(false);
+        AtomicReference<String> pendingName = new AtomicReference<>();
+        AtomicReference<String> pendingId = new AtomicReference<>();
+
         return Flux.<Event>defer(() -> {
                     try {
                         return agent.stream(List.of(toolResult), StreamOptions.defaults());
                     } catch (IllegalStateException e) {
-                        // 把同步抛转成 Flux.error,让 retryWhen 接住
                         return Flux.error(e);
                     }
                 })
@@ -296,18 +290,50 @@ public class SessionManager {
                     .filter(t -> t instanceof IllegalStateException
                         && t.getMessage() != null
                         && t.getMessage().contains("Agent is still running")))
+            .doOnNext(event -> {
+                // 跟 stream() 同源:扫描 ToolUseBlock,检测是否再次挂起
+                Msg m = event.getMessage();
+                if (m == null) return;
+                List<ToolUseBlock> tus;
+                try {
+                    tus = m.getContentBlocks(ToolUseBlock.class);
+                } catch (Exception e) {
+                    return;
+                }
+                if (tus == null) return;
+                for (ToolUseBlock tu : tus) {
+                    if (tu.getName() == null || tu.getName().startsWith("__")) continue;
+                    pendingId.set(tu.getId());
+                    pendingName.set(tu.getName());
+                    if (suspendedAgents.putIfAbsent(safe, agent) == null) {
+                        log.debug("Session {} re-suspended on tool {} ({}) after resume; awaiting /tools/result",
+                            safe, tu.getName(), tu.getId());
+                    }
+                    reSuspended.set(true);
+                    return;
+                }
+            })
             .doOnComplete(() -> {
-                // 完成后移出挂起池 + saveTo(此时 memory 已含 tool result,完整)
-                suspendedAgents.remove(safe);
-                agent.saveTo(session, safe);
-                log.debug("Session {} resumed and saved", safe);
+                if (reSuspended.get()) {
+                    // 恢复后 LLM 又调了工具 → 再次挂起,不 saveTo
+                    log.debug("Session {} resume complete (re-suspended on tool {} ({}))",
+                        safe, pendingName.get(), pendingId.get());
+                } else {
+                    // 正常完成:无再次工具调用,持久化
+                    suspendedAgents.remove(safe);
+                    agent.saveTo(session, safe);
+                    log.debug("Session {} resumed and saved", safe);
+                }
             })
             .doOnError(err -> {
-                // LLM 5xx / 中断:tool result 已喂入 memory 但 LLM 没消化,save 会留半配对。
-                // 移出挂起池 + evict,让下次 stream 从干净状态开始。
-                suspendedAgents.remove(safe);
-                agents.remove(safe);
-                log.warn("Session {} resume error, evicted: {}", safe, err.toString());
+                if (reSuspended.get()) {
+                    log.warn("Session {} resume error after re-suspend, agent stays suspended: {}",
+                        safe, err.toString());
+                } else {
+                    suspendedAgents.remove(safe);
+                    agents.remove(safe);
+                    log.warn("Session {} resume error, evicted: {}", safe, err.toString());
+                }
             });
     }
 

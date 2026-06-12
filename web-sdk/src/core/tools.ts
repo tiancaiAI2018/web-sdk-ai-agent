@@ -26,6 +26,8 @@ import type {
   PendingToolCall,
   ToolDef,
   ToolCallPayload,
+  ToolCallStartPayload,
+  ToolCallDeltaPayload,
   MessageRole,
 } from './types';
 
@@ -339,6 +341,16 @@ export interface ToolCtx {
   sleep: (ms: number) => Promise<void>;
   appendTyping: () => HTMLElement;
   getMsgEl: () => HTMLElement;
+
+  // ===== SSE 事件处理(由 agent 注入,tools/result 流跟 stream 流共用) =====
+  /** 处理 thinking 事件 */
+  handleThinking?: (text: string) => void;
+  /** 处理 tool_call_start 事件 */
+  handleToolCallStart?: (parsed: ToolCallStartPayload) => void;
+  /** 处理 tool_call_delta 事件 */
+  handleToolCallDelta?: (parsed: ToolCallDeltaPayload) => void;
+  /** 处理 tool_call 事件(完整帧),返回 true 表示已提交 */
+  handleToolCall?: (parsed: ToolCallPayload) => Promise<boolean>;
 }
 
 /**
@@ -502,32 +514,55 @@ async function _postToolResultInner(
   // 2xx:工具结果已接收,标记油彩终端卡为"完成"(后续 SSE 是 LLM 确认)
   if (card) markToolCardSuccess(card, '✓ 已提交');
 
-  // 2xx:消耗 SSE,渲染 LLM 确认回复 —— 跟 _sendUserMessage 走同一条 lifecycle
+  // 2xx:消耗 SSE,渲染 LLM 回复 —— 跟 _sendUserMessage 走完全同源的处理逻辑
+  // tools/result 的 SSE 跟 /stream 完全一样:可能有 thinking、tool_call、tool_call_delta 等
   const typing = ctx.appendTyping();
   const msgEl = ctx.getMsgEl();
-  // 关键:跟 chat/stream 完全同源 —— 任何 onDone / onError / 空 div / 滚底 行为漂移都会被发现
+  let submitted = false;
   const lifecycle = AIAgent.buildStreamHandlers({
     typing,
     msgEl,
-    // resume 流:没有思考卡片,onUpgrade 不做事(就是空函数)
-    onUpgrade: () => { /* resume 流无 thinking 卡片需要收 */ },
+    onUpgrade: () => {
+      // tools/result 流也可能有 thinking 卡片,需要收起
+      if (ctx.handleThinking) {
+        // finalizeThinking 由 _handleThinking 内部的 _thinkingCard 管理
+      }
+    },
     onErrorFallback: (msg) => ctx.appendMsg('system', msg),
-    onDoneCleanup: () => ctx.setBusy(false), // 接管 _sendUserMessage 留的 busy
+    onDoneCleanup: () => {
+      // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关)
+      if (!submitted) ctx.setBusy(false);
+    },
   });
   let consumed = true;
-  const onToolCallDuringResume: (parsed: ToolCallPayload) => void = (parsed) => {
-    // 不应该出现(resume 后 LLM 不会立刻再调工具),有则按普通 tool_call 处理
-    if (parsed && parsed.tool && parsed.tool.indexOf('__') !== 0) {
-      ctx.appendMsg('tool', '', { tool: parsed.tool, args: parsed.args || {} });
-    }
-  };
   try {
     await consumeSseStream(
       r.body,
       lifecycle.onChunk,
       lifecycle.onDone,
       lifecycle.onError,
-      onToolCallDuringResume
+      // onToolCall:跟 _sendUserMessage 完全同源 —— 查本地工具、执行 onCall、POST /tools/result
+      async (parsed: ToolCallPayload) => {
+        if (ctx.handleToolCall) {
+          ctx.setBusy(true);
+          const didSubmit = await ctx.handleToolCall(parsed);
+          if (didSubmit) submitted = true;
+        }
+      },
+      // onToolCallDelta
+      (parsed: ToolCallDeltaPayload) => {
+        if (ctx.handleToolCallDelta) ctx.handleToolCallDelta(parsed);
+      },
+      // onToolCallStart
+      (parsed: ToolCallStartPayload) => {
+        if (ctx.handleToolCallStart) ctx.handleToolCallStart(parsed);
+      },
+      // onToolCallEnd
+      undefined,
+      // onThinking
+      (text: string) => {
+        if (ctx.handleThinking) ctx.handleThinking(text);
+      }
     );
   } catch (e) {
     consumed = false;

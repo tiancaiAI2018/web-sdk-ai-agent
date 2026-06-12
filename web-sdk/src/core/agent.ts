@@ -158,6 +158,8 @@ export class AIAgent {
   _lastToolCard: HTMLElement | null = null;
   /** 当前流式思考卡片的根元素(供 onThinking 追加用) */
   _thinkingCard: HTMLElement | null = null;
+  /** 当前流式思考的文本累积缓冲 */
+  _thinkingBuf: string = '';
   /**
    * tool_call_delta 累积中的占位卡:toolUseId → 卡片 DOM。
    * 完整 tool_call last 帧来时,从这里取卡 promote 成完整卡。
@@ -772,7 +774,7 @@ export class AIAgent {
     const refs = this._widget!.getRefs()!;
     // assistant 消息占位(内部是 5 颗粒子,等第一次 onChunk 到达时清空填文本)
     const typing = appendTyping(refs.msgEl);
-    let thinkingBuf = '';
+    this._thinkingBuf = '';
     const self = this;
     const activeSnapshot = this._activeTools.slice();
     let submitted = false;
@@ -828,130 +830,22 @@ export class AIAgent {
       onDone: lifecycle.onDone,
       onError: lifecycle.onError,
       onThinking: (text: string) => {
-        // 累积 + 全量渲染(markdown)
-        thinkingBuf += text;
-        if (!self._thinkingCard) {
-          // 把卡片插在 typing 占位 div 前面(用户消息之后,typing 之前)
-          refs.msgEl.insertBefore(
-            createThinkingCard(refs.msgEl),
-            typing
-          );
-          // 找到刚插入的卡片
-          const cards = refs.msgEl.querySelectorAll('.aiagent-sdk-thinking-card');
-          self._thinkingCard = cards.length ? (cards[cards.length - 1] as HTMLElement) : null;
-        }
-        if (self._thinkingCard) {
-          setThinkingContent(self._thinkingCard, thinkingBuf);
-        }
+        self._handleThinking(text, refs.msgEl, typing);
       },
       onToolCallStart: (parsed: ToolCallStartPayload) => {
-        console.log('[AIAgent SDK 🚀 onToolCallStart]', parsed);
-        if (!parsed || !parsed.id || !parsed.name) {
-          console.log('[AIAgent SDK ❌ onToolCallStart] 早 return:id 或 name 为空');
-          return;
-        }
-        // 后端声明帧:用真实 tool 名建占位卡
-        const card = appendToolCallDelta(refs.msgEl, parsed.id, parsed.name);
-        self._pendingDelta.set(parsed.id, card);
+        self._handleToolCallStart(parsed, refs.msgEl);
       },
       onToolCallDelta: (parsed: ToolCallDeltaPayload) => {
-        console.log('[AIAgent SDK 🔧 onToolCallDelta]', parsed);
-        if (!parsed || !parsed.id) {
-          console.log('[AIAgent SDK ❌ onToolCallDelta] 早 return:id 为空');
-          return;
-        }
-        // 同一个 toolid 累计到同一张占位卡。
-        // 兼容:后端没推 tool_call_start 直接推 delta,这里补建占位卡。
-        let card = self._pendingDelta.get(parsed.id);
-        if (!card) {
-          card = appendToolCallDelta(refs.msgEl, parsed.id, parsed.name || '...');
-          self._pendingDelta.set(parsed.id, card);
-        }
-        updateToolCallDelta(card, parsed.delta || '');
+        self._handleToolCallDelta(parsed, refs.msgEl);
       },
       onToolCallEnd: (_parsed: ToolCallEndPayload) => {
         console.log('[AIAgent SDK 🏁 onToolCallEnd] 流式结束');
         // 暂不需要 UI 行为,留 hook 备扩展
       },
       onToolCall: async (parsed: ToolCallPayload) => {
-        console.log('[AIAgent SDK 🎯 onToolCall 入口] parsed=', parsed,
-          'sessionId=', self._chatSessionId, 'submitted=', submitted);
-        // 立刻锁 busy —— 防止 onDone 已触发 setBusy(false) 后用户发新消息撞 409。
-        // (流末尾 id:last 帧可能在 onCall 之前触发 fireDone,见 sse.ts 路由顺序注释)
         self._setBusy(true);
-        if (!parsed || !parsed.tool) {
-          console.log('[AIAgent SDK ❌ onToolCall] 早 return:parsed 或 tool 为空');
-          return;
-        }
-        // 完整 tool_use 帧(后端 last 帧必带完整 name + args,不需要前端累积)
-        if (parsed.tool.indexOf('__') === 0) {
-          console.log('[AIAgent SDK ❌ onToolCall] 早 return:tool 名字 __ 开头');
-          return;
-        }
-        if (!parsed.args || typeof parsed.args !== 'object') {
-          console.log('[AIAgent SDK ❌ onToolCall] 早 return:args 不是对象', typeof parsed.args);
-          return;
-        }
-        if (Object.keys(parsed.args).length === 0) {
-          console.log('[AIAgent SDK ❌ onToolCall] 早 return:args 是空对象(后端 last 帧没推完整?)');
-          return;
-        }
-        if (submitted) {
-          console.log('[AIAgent SDK ❌ onToolCall] 早 return:本 stream 已 submitted');
-          return;
-        }
-        submitted = true;
-
-        // 1) 把占位卡 promote 成完整卡(用 _pendingDelta 里的同 id 卡;
-        //    没经过 delta 阶段直接 last 帧 → fallback 新建一张)
-        const existing = parsed.id ? self._pendingDelta.get(parsed.id) : null;
-        const card: HTMLElement = existing
-          ? (promoteToConfirmedToolCall(existing, parsed.args, parsed.tool),
-            self._pendingDelta.delete(parsed.id!), existing)
-          : (() => {
-              const fb = appendToolCard(refs.msgEl, parsed.tool, parsed.args);
-              promoteToConfirmedToolCall(fb, parsed.args, parsed.tool);
-              return fb;
-            })();
-        self._lastToolCard = card;
-        // ⚠️ 不再调 self._appendMsg('tool', ...) —— 那会走 createMessageEl + appendToolCard
-        // 重建一张卡塞到 msgEl,跟 _pendingDelta 里 promote 出的卡重复(用户截图红框椭圆)。
-        // 改成只 push 到内部 _messages 列表(对外 API 字段)就够了。
-        self._messages.push({ role: 'tool', text: '', data: { tool: parsed.tool, args: parsed.args } });
-
-        // 2) 决策:SDK 有 onCall → 直接执行;无 onCall → 弹确认框
-        const localTool = self._getLocalTool(self._chatSessionId!, parsed.tool);
-        const hasOnCall = !!(localTool && localTool.onCall);
-        console.log('[AIAgent SDK 🔍 onToolCall 决策]',
-          'sid=', self._chatSessionId, 'tool=', parsed.tool,
-          'localTool=', !!localTool, 'hasOnCall=', hasOnCall);
-        if (!hasOnCall) {
-          // 没有可执行体 → 必须用户确认(addConfirmActions 内部已把 status 设"✓ 已确认"或"✕ 已取消")
-          const ok = await addConfirmActions(card);
-          console.log('[AIAgent SDK 🛡 addConfirmActions 结果]', ok);
-          if (!ok) {
-            self._appendMsg('system', `🚫 已取消工具调用:${parsed.tool}`);
-            await self._postAbort();
-            return;
-          }
-        }
-
-        // 3) 执行 / 喂结果
-        let toolResult: unknown = hasOnCall ? undefined : { confirmed: true };
-        if (hasOnCall) {
-          try {
-            console.log('[AIAgent SDK ⚡ 调用 onCall]', parsed.tool, 'args=', parsed.args);
-            toolResult = await Promise.resolve(localTool!.onCall!(parsed.args));
-            console.log('[AIAgent SDK ⚡ onCall 返回]', toolResult);
-          } catch (e) {
-            console.error('[AIAgent SDK] onCall threw:', e);
-            self._appendMsg('system', '⚠️ onCall 失败: ' + (e as Error).message);
-          }
-        }
-        if (parsed.id) {
-          console.log('[AIAgent SDK 📤 POST /tools/result]', parsed.id, 'result=', toolResult);
-          await self._postToolResult(parsed.id, toolResult, card);
-        }
+        const didSubmit = await self._handleToolCall(parsed, refs.msgEl);
+        if (didSubmit) submitted = true;
       },
     };
 
@@ -968,6 +862,96 @@ export class AIAgent {
     } catch (e) {
       /* _postStream 内部已 onError */
     }
+  }
+
+  // ====================================================================
+  // SSE 事件处理 —— _sendUserMessage 和 _postToolResultInner 共用
+  // ====================================================================
+
+  /** 处理 thinking 事件:累积文本 + 渲染思考卡片 */
+  _handleThinking(text: string, msgEl: HTMLElement, typing: HTMLElement): void {
+    if (!this._thinkingBuf) this._thinkingBuf = '';
+    this._thinkingBuf += text;
+    if (!this._thinkingCard) {
+      msgEl.insertBefore(createThinkingCard(msgEl), typing);
+      const cards = msgEl.querySelectorAll('.aiagent-sdk-thinking-card');
+      this._thinkingCard = cards.length ? (cards[cards.length - 1] as HTMLElement) : null;
+    }
+    if (this._thinkingCard) {
+      setThinkingContent(this._thinkingCard, this._thinkingBuf);
+    }
+  }
+
+  /** 处理 tool_call_start 事件:创建占位卡 */
+  _handleToolCallStart(parsed: ToolCallStartPayload, msgEl: HTMLElement): void {
+    if (!parsed || !parsed.id || !parsed.name) return;
+    const card = appendToolCallDelta(msgEl, parsed.id, parsed.name);
+    this._pendingDelta.set(parsed.id, card);
+  }
+
+  /** 处理 tool_call_delta 事件:累积到占位卡 */
+  _handleToolCallDelta(parsed: ToolCallDeltaPayload, msgEl: HTMLElement): void {
+    if (!parsed || !parsed.id) return;
+    let card = this._pendingDelta.get(parsed.id);
+    if (!card) {
+      card = appendToolCallDelta(msgEl, parsed.id, parsed.name || '...');
+      this._pendingDelta.set(parsed.id, card);
+    }
+    updateToolCallDelta(card, parsed.delta || '');
+  }
+
+  /**
+   * 处理 tool_call 事件(完整帧):查找本地工具 → 执行 onCall → POST /tools/result
+   * @returns true 表示本 stream 已提交工具结果(调用方据此决定是否关 busy)
+   */
+  async _handleToolCall(
+    parsed: ToolCallPayload,
+    msgEl: HTMLElement
+  ): Promise<boolean> {
+    if (!parsed || !parsed.tool) return false;
+    if (parsed.tool.indexOf('__') === 0) return false;
+    if (!parsed.args || typeof parsed.args !== 'object') return false;
+    if (Object.keys(parsed.args).length === 0) return false;
+
+    // promote 占位卡为完整卡
+    const existing = parsed.id ? this._pendingDelta.get(parsed.id) : null;
+    const card: HTMLElement = existing
+      ? (promoteToConfirmedToolCall(existing, parsed.args, parsed.tool),
+        this._pendingDelta.delete(parsed.id!), existing)
+      : (() => {
+          const fb = appendToolCard(msgEl, parsed.tool, parsed.args);
+          promoteToConfirmedToolCall(fb, parsed.args, parsed.tool);
+          return fb;
+        })();
+    this._lastToolCard = card;
+    this._messages.push({ role: 'tool', text: '', data: { tool: parsed.tool, args: parsed.args } });
+
+    // 决策:SDK 有 onCall → 直接执行;无 onCall → 弹确认框
+    const localTool = this._getLocalTool(this._chatSessionId!, parsed.tool);
+    const hasOnCall = !!(localTool && localTool.onCall);
+    if (!hasOnCall) {
+      const ok = await addConfirmActions(card);
+      if (!ok) {
+        this._appendMsg('system', `🚫 已取消工具调用:${parsed.tool}`);
+        await this._postAbort();
+        return true;
+      }
+    }
+
+    // 执行 onCall + POST /tools/result
+    let toolResult: unknown = hasOnCall ? undefined : { confirmed: true };
+    if (hasOnCall) {
+      try {
+        toolResult = await Promise.resolve(localTool!.onCall!(parsed.args));
+      } catch (e) {
+        console.error('[AIAgent SDK] onCall threw:', e);
+        this._appendMsg('system', '⚠️ onCall 失败: ' + (e as Error).message);
+      }
+    }
+    if (parsed.id) {
+      await this._postToolResult(parsed.id, toolResult, card);
+    }
+    return true;
   }
 
   _setBusy(busy: boolean): void {
@@ -1157,6 +1141,28 @@ export class AIAgent {
       getMsgEl: () => {
         const refs = self._widget?.getRefs();
         return refs?.msgEl || document.createElement('div');
+      },
+      // SSE 事件处理:tools/result 流跟 stream 流共用同一套逻辑
+      handleThinking: (text) => {
+        const refs = self._widget?.getRefs();
+        if (!refs) return;
+        const typing = refs.msgEl.querySelector('.aiagent-sdk-typing') as HTMLElement | null;
+        if (typing) self._handleThinking(text, refs.msgEl, typing);
+      },
+      handleToolCallStart: (parsed) => {
+        const refs = self._widget?.getRefs();
+        if (!refs) return;
+        self._handleToolCallStart(parsed, refs.msgEl);
+      },
+      handleToolCallDelta: (parsed) => {
+        const refs = self._widget?.getRefs();
+        if (!refs) return;
+        self._handleToolCallDelta(parsed, refs.msgEl);
+      },
+      handleToolCall: async (parsed) => {
+        const refs = self._widget?.getRefs();
+        if (!refs) return false;
+        return self._handleToolCall(parsed as ToolCallPayload, refs.msgEl);
       },
     };
   }
