@@ -25,9 +25,10 @@
  *   但 dist/index.d.ts 主入口会 re-export 这些类型给 npm 消费方)。
  */
 
-import { createAIAgent } from '../core/agent';
+import { AIAgent, createAIAgent } from '../core/agent';
+import { changeSkinTool } from '../core/tools';
 import { loadFonts } from '../ui/fonts';
-import type { AIAgentOptions } from '../core/types';
+import type { AIAgentOptions, ToolDef } from '../core/types';
 
 // IRIDESCENT BLOOM 主题 — 提前加载字体(Inter / JetBrains Mono / Fraunces)
 loadFonts();
@@ -36,7 +37,18 @@ const factory = createAIAgent();
 
 // UMD 入口副作用:把 factory 挂到 globalThis.AIAgent
 // 这样 <script> 加载后 window.AIAgent.init(...) 可调
-(globalThis as unknown as { AIAgent: typeof factory }).AIAgent = factory;
+// 同时挂载工具工厂(changeSkinTool 等)+ registerBuiltinTool 静态方法,
+// 用户在 html 里可以直接
+//   AIAgent.changeSkinTool(agent)
+//   AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent))
+// 跟 ESM 入口 `import { changeSkinTool, registerBuiltinTool } from 'aiagent-sdk'` 等价
+(globalThis as unknown as { AIAgent: unknown }).AIAgent = Object.assign(
+  factory,
+  {
+    changeSkinTool,
+    registerBuiltinTool: AIAgent.registerBuiltinTool,
+  }
+);
 
 // 加载横幅(方便 devtools 立刻看到当前 SDK 版本,排查浏览器缓存)
 const sdkVersion = '5.0.0';

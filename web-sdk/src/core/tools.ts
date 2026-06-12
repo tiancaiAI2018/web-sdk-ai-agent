@@ -14,11 +14,8 @@
  */
 
 import { consumeSseStream } from './sse';
-import { renderMarkdownLite, decorateImages } from './markdown';
-import {
-  markTypingActive,
-  unmarkTypingActive,
-} from '../ui/components/typing';
+import { SkinRegistry } from './skin';
+import { AIAgent } from './agent';
 import {
   markToolCardSuccess,
   markToolCardError,
@@ -189,6 +186,102 @@ export async function postAbort(
   } catch {
     /* 隐私模式可能抛 */
   }
+}
+
+// ====================================================================
+// 预制工具 schema —— 让用户从 html 一行注册,不用每次手写 description/parameters
+// ====================================================================
+
+/**
+ * change_skin 工具的 schema 工厂。用户在 html 注册时:
+ *
+ *   agent.registerTools({
+ *     sessionId: 'demo',
+ *     tools: [
+ *       submitFormTool,           // 自己写 schema
+ *       changeSkinTool(agent),    // 用 SDK 预制,只传 agent
+ *     ],
+ *   });
+ *
+ * 工厂返回的 ToolDef 自带 onCall(闭包持 agent),在 tool_call 时调 agent.setSkin()。
+ * 跟 submitFormTool 走的同一条路径:_internalRegister 把 schema 发给后端,onCall 留前端。
+ *
+ * description 动态生成:每次调用工厂时扫一次 SkinRegistry,把所有已注册皮肤的
+ *   name + aiHint 拼成 markdown 列表。LLM 看到的是"具体有哪些皮肤,每个什么风格",
+ *   而不是模糊的"由 SDK 注册表决定"。
+ */
+export function changeSkinTool(agent: {
+  setSkin: (name: string) => void;
+  registerSkin?: (skin: unknown) => void;
+}): ToolDef {
+  // 动态拼接:列出当前所有皮肤 + 各自描述,加上 4 种 name 值的语义
+  const all = SkinRegistry.instance().list();
+  const allDescribed = all
+    .map((name) => {
+      const skin = SkinRegistry.instance().get(name);
+      const hint = skin && skin.aiHint ? skin.aiHint : '(no description)';
+      return `  - \`${name}\`: ${hint}`;
+    })
+    .join('\n');
+  return {
+    name: 'change_skin',
+    description:
+      `切换 AI 助手浮窗的皮肤。\`name\` 字段可传:\n` +
+      `  - 具体皮肤名(见下方列表)\n` +
+      `  - \`"next"\` 切到下一个(在已注册皮肤列表中循环)\n` +
+      `  - \`"prev"\` 切到上一个\n` +
+      `  - \`"random"\` 随机切一个\n` +
+      `\n当前已注册皮肤:\n${allDescribed}\n` +
+      `传不在列表里的名字会返回 unknown_skin 错误(不会乱切)。`,
+    parameters: {
+      type: 'object',
+      properties: {
+        name: {
+          type: 'string',
+          description:
+            '皮肤名(见 description 列表),或 "next" / "prev" / "random" 之一。',
+        },
+      },
+      required: ['name'],
+    },
+    strict: false,
+    onCall: (args) => {
+      const requested = (args && (args as { name?: string }).name) || 'next';
+      const all = SkinRegistry.instance().list();
+      let target: string;
+      // 取当前皮肤(从 agent._widget,这里只能由调用方传入,作为工厂的最小依赖)
+      const current = (agent as { _widget?: { getSkin?: () => { name: string } } })._widget?.getSkin?.()?.name || '';
+      if (requested === 'random') {
+        target = all[Math.floor(Math.random() * all.length)] || current;
+      } else if (requested === 'next' || requested === 'prev') {
+        const idx = all.indexOf(current);
+        const step = requested === 'next' ? 1 : -1;
+        target = all[((idx + step) % all.length + all.length) % all.length] || current;
+      } else if (all.indexOf(requested) >= 0) {
+        target = requested;
+      } else {
+        return {
+          ok: false,
+          error: 'unknown_skin',
+          requested,
+          available: all,
+          currentSkin: current,
+        };
+      }
+      try {
+        agent.setSkin(target);
+        return {
+          ok: true,
+          currentSkin: target,
+          previousSkin: current,
+          available: all,
+          message: '已切换皮肤:' + current + ' → ' + target,
+        };
+      } catch (e) {
+        return { ok: false, error: (e as Error).message, currentSkin: current };
+      }
+    },
+  };
 }
 
 // ====================================================================
@@ -379,17 +472,18 @@ async function _postToolResultInner(
   // 2xx:工具结果已接收,标记油彩终端卡为"完成"(后续 SSE 是 LLM 确认)
   if (card) markToolCardSuccess(card, '✓ 已提交');
 
-  // 2xx:消耗 SSE,渲染 LLM 确认回复
+  // 2xx:消耗 SSE,渲染 LLM 确认回复 —— 跟 _sendUserMessage 走同一条 lifecycle
   const typing = ctx.appendTyping();
-  let assistantBuf = '';
-  let replaced = false;
-  function upgradeTyping() {
-    if (!replaced) {
-      replaced = true;
-      typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-assistant';
-      markTypingActive(typing);
-    }
-  }
+  const msgEl = ctx.getMsgEl();
+  // 关键:跟 chat/stream 完全同源 —— 任何 onDone / onError / 空 div / 滚底 行为漂移都会被发现
+  const lifecycle = AIAgent.buildStreamHandlers({
+    typing,
+    msgEl,
+    // resume 流:没有思考卡片,onUpgrade 不做事(就是空函数)
+    onUpgrade: () => { /* resume 流无 thinking 卡片需要收 */ },
+    onErrorFallback: (msg) => ctx.appendMsg('system', msg),
+    onDoneCleanup: () => ctx.setBusy(false), // 接管 _sendUserMessage 留的 busy
+  });
   let consumed = true;
   const onToolCallDuringResume: (parsed: ToolCallPayload) => void = (parsed) => {
     // 不应该出现(resume 后 LLM 不会立刻再调工具),有则按普通 tool_call 处理
@@ -400,33 +494,9 @@ async function _postToolResultInner(
   try {
     await consumeSseStream(
       r.body,
-      (ev) => {
-        assistantBuf += ev.data || '';
-        upgradeTyping();
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
-        ctx.getMsgEl().scrollTop = ctx.getMsgEl().scrollHeight;
-      },
-      () => {
-        upgradeTyping();
-        unmarkTypingActive(typing);
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
-        ctx.getMsgEl().scrollTop = ctx.getMsgEl().scrollHeight;
-        ctx.setBusy(false); // 接管 _sendUserMessage 留的 busy
-      },
-      (e) => {
-        consumed = false;
-        if (replaced) {
-          unmarkTypingActive(typing);
-          typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
-          typing.textContent = '⚠️ ' + e.message;
-        } else {
-          typing.remove();
-          ctx.appendMsg('system', '⚠️ ' + e.message);
-        }
-        ctx.setBusy(false);
-      },
+      lifecycle.onChunk,
+      lifecycle.onDone,
+      lifecycle.onError,
       onToolCallDuringResume
     );
   } catch (e) {

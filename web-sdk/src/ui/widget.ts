@@ -14,6 +14,7 @@
  */
 
 import { WIDGET_CSS } from './styles';
+import { Skin, SkinRegistry, skinForTheme } from '../core/skin';
 
 export interface WidgetOpts {
   title?: string;
@@ -23,6 +24,8 @@ export interface WidgetOpts {
   position?: 'bottom-right' | 'bottom-left';
   avatar?: string;
   demoTools?: boolean;
+  /** 皮肤名(从 SkinRegistry 取,默认 'iridescent-bloom') */
+  skin?: string;
 }
 
 export interface WidgetHandlers {
@@ -31,6 +34,12 @@ export interface WidgetHandlers {
   onClose: () => void;
   onToggleExtract: () => void;
   onPanelOpen: () => void;
+  /**
+   * 用户在浮窗点了换肤按钮(>1 个皮肤时出现)。
+   * agent 接到后:widget.applySkin(name) + 重放消息历史(因为 destroy 时 DOM 丢了)。
+   * 不传 = widget 自己循环,不做消息重放(适合 demo)。
+   */
+  onCycleSkin?: (nextName: string) => void;
 }
 
 export interface WidgetRefs {
@@ -61,11 +70,19 @@ export class Widget {
   private mounted = false;
   private avatarRaw = '🤖';
   private onMouseMove: ((e: MouseEvent) => void) | null = null;
+  /** 当前皮肤(可在 mount 后由 applySkin 切换) */
+  private skin: Skin;
+  /** 用户已输入但未发送的文本 —— applySkin 重 mount 时恢复 */
+  private _pendingInput = '';
 
   constructor(
     private readonly opts: WidgetOpts,
     private readonly handlers: WidgetHandlers
-  ) {}
+  ) {
+    // 按 skin 名取皮肤,没取到则用 skinForTheme(theme) 兜底
+    const name = opts.skin || 'iridescent-bloom';
+    this.skin = SkinRegistry.instance().get(name) || skinForTheme(opts.theme || 'ink');
+  }
 
   getRefs(): WidgetRefs | null {
     if (
@@ -96,6 +113,12 @@ export class Widget {
     host.className = 'aiagent-sdk-host';
     host.setAttribute('data-position', this.opts.position || 'bottom-right');
     host.setAttribute('data-theme', this.opts.theme || 'ink');
+    // 皮肤相关属性挂到 host(因为 :host() CSS 选择器只匹配 host 元素,不匹配 panel)
+    host.setAttribute('data-skin', this.skin.name);
+    host.setAttribute('data-status-dot', this.skin.layout.statusDotStyle);
+    host.setAttribute('data-send-icon', this.skin.layout.sendIcon);
+    host.setAttribute('data-message-enter', this.skin.layout.messageEnter);
+    host.setAttribute('data-bubble-anim', this.skin.layout.bubbleAnimation);
     document.body.appendChild(host);
     this.host = host;
 
@@ -103,7 +126,7 @@ export class Widget {
     this.shadow = shadow;
 
     const styleEl = document.createElement('style');
-    styleEl.textContent = WIDGET_CSS;
+    styleEl.textContent = this.skin.css || WIDGET_CSS;
     shadow.appendChild(styleEl);
 
     // 4. 气泡(默认走"棱镜"路径;emoji 头像走简单文本)
@@ -127,15 +150,36 @@ export class Widget {
     // 5. 面板
     const panel = document.createElement('div');
     panel.className = 'aiagent-sdk-panel' + pos;
+    // 注:data-skin / data-layout-* 属性都挂在 host 上(见上面 mount 头部),
+    //   因为 CSS 的 :host([data-skin="aurora"]) 选择器只匹配 host 元素。
     const demoToolsBtn = this.opts.demoTools
       ? '<button class="aiagent-sdk-iconbtn aiagent-sdk-extract" title="开/关 录单模式" aria-label="录单模式">⊕</button>'
       : '';
+    // 4 角装饰:只有 skin.layout.cornerGlow=true 才生成 DOM
+    const cornerHTML = this.skin.layout.cornerGlow
+      ? [
+          '<div class="aiagent-sdk-corner aiagent-sdk-corner-tl" aria-hidden="true"></div>',
+          '<div class="aiagent-sdk-corner aiagent-sdk-corner-tr" aria-hidden="true"></div>',
+          '<div class="aiagent-sdk-corner aiagent-sdk-corner-bl" aria-hidden="true"></div>',
+          '<div class="aiagent-sdk-corner aiagent-sdk-corner-br" aria-hidden="true"></div>',
+        ].join('')
+      : '';
+    // 换肤按钮:只有注册表里 ≥2 个皮肤时才显示(避免单皮肤时点了反而迷惑)
+    const allSkins = SkinRegistry.instance().list();
+    const skinBtnHTML = allSkins.length >= 2
+      ? `<button class="aiagent-sdk-iconbtn aiagent-sdk-cycle-skin" title="切换皮肤 (当前:${this.skin.name})" aria-label="切换皮肤">🎨</button>`
+      : '';
+    // 发送按钮内容:svg / arrow 字符 / circle 空
+    const sendIconHTML = (() => {
+      switch (this.skin.layout.sendIcon) {
+        case 'svg': return SEND_ICON_SVG;
+        case 'arrow': return '→';
+        case 'circle': return '';
+        default: return SEND_ICON_SVG;
+      }
+    })();
     panel.innerHTML = [
-      // 4 角油彩飞溅
-      '<div class="aiagent-sdk-corner aiagent-sdk-corner-tl" aria-hidden="true"></div>',
-      '<div class="aiagent-sdk-corner aiagent-sdk-corner-tr" aria-hidden="true"></div>',
-      '<div class="aiagent-sdk-corner aiagent-sdk-corner-bl" aria-hidden="true"></div>',
-      '<div class="aiagent-sdk-corner aiagent-sdk-corner-br" aria-hidden="true"></div>',
+      cornerHTML,
       // 极简头部
       '<div class="aiagent-sdk-header">',
       '  <div class="aiagent-sdk-header-info">',
@@ -145,6 +189,7 @@ export class Widget {
       '  <div class="aiagent-sdk-header-actions">',
       '    <span class="aiagent-sdk-subtitle"></span>',
       demoToolsBtn,
+      skinBtnHTML,
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-toggle-thinking" title="显示/隐藏 思考过程" aria-label="思考">🧠</button>',
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-new" title="新会话" aria-label="新会话">＋</button>',
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-close" title="关闭" aria-label="关闭">✕</button>',
@@ -157,7 +202,7 @@ export class Widget {
       // 输入栏(SVG 箭头)
       '<div class="aiagent-sdk-inputbar">',
       '  <textarea rows="1" placeholder="" aria-label="输入消息"></textarea>',
-      `  <button class="aiagent-sdk-send" aria-label="发送">${SEND_ICON_SVG}</button>`,
+      `  <button class="aiagent-sdk-send" aria-label="发送">${sendIconHTML}</button>`,
       '</div>',
     ].join('');
     shadow.appendChild(panel);
@@ -180,6 +225,7 @@ export class Widget {
     const newBtn = panel.querySelector('.aiagent-sdk-new') as HTMLElement;
     const extractBtn = panel.querySelector('.aiagent-sdk-extract') as HTMLElement | null;
     const thinkingBtn = panel.querySelector('.aiagent-sdk-toggle-thinking') as HTMLElement | null;
+    const skinBtn = panel.querySelector('.aiagent-sdk-cycle-skin') as HTMLElement | null;
 
     closeBtn.addEventListener('click', () => this.handlers.onClose());
     newBtn.addEventListener('click', () => this.handlers.onNew());
@@ -191,6 +237,29 @@ export class Widget {
         this.panel!.classList.toggle('aiagent-sdk-thinking-hidden');
         const hidden = this.panel!.classList.contains('aiagent-sdk-thinking-hidden');
         thinkingBtn.style.opacity = hidden ? '0.4' : '1';
+      });
+    }
+    if (skinBtn) {
+      skinBtn.addEventListener('click', () => {
+        const all = SkinRegistry.instance().list();
+        if (all.length < 2) return;
+        const cur = this.skin.name;
+        const idx = all.indexOf(cur);
+        const next = all[(idx + 1) % all.length];
+        // 优先让 agent 接管:它能重放消息历史
+        if (typeof this.handlers.onCycleSkin === 'function') {
+          this.handlers.onCycleSkin(next);
+          return;
+        }
+        // 兜底:agent 没传 handler,widget 自己切换(无消息重放)
+        this.applySkin(next);
+        if (this.panel) {
+          this.panel.classList.add('aiagent-sdk-skin-just-changed');
+          setTimeout(() => {
+            if (this.panel) this.panel.classList.remove('aiagent-sdk-skin-just-changed');
+          }, 400);
+        }
+        console.log('[AIAgent SDK 🎨 换肤]', cur, '→', next);
       });
     }
     this.sendBtn.addEventListener('click', () => {
@@ -229,11 +298,21 @@ export class Widget {
     // 9. 初始主题
     this.setTheme(this.opts.theme || 'ink');
 
+    // 10. 恢复 pendingInput(applySkin 走的路径:destroy → mount 会保留)
+    if (this._pendingInput && this.taEl) {
+      this.taEl.value = this._pendingInput;
+      this._pendingInput = '';
+    }
+
     this.mounted = true;
   }
 
   destroy(): void {
     if (!this.mounted) return;
+    // 缓存当前 input(让 applySkin 重 mount 后能恢复)
+    if (this.taEl) {
+      this._pendingInput = this.taEl.value;
+    }
     if (this.panel && this.onMouseMove) {
       this.panel.removeEventListener('mousemove', this.onMouseMove);
     }
@@ -249,8 +328,87 @@ export class Widget {
     this.sendBtn = null;
     this.welcomeEl = null;
     this.mounted = false;
-    this.isOpen = false;
+    // isOpen 留着 —— applySkin 会用,决定新 mount 后是否要 open
     this.onMouseMove = null;
+  }
+
+  /**
+   * 运行时切换皮肤(热切换,局部更新版本)。
+   *
+   * 之前的设计:destroy 整个 panel + mount 新的。导致:
+   *   1. msgEl 子树全丢(用户消息/助手回复/思考卡/工具卡都没了)
+   *   2. 卡片上的按钮(展开/收起/确认/取消)事件 handler 也没了
+   *   3. 需要 agent 层做"快照 + 重放"机制,代码复杂且容易漏状态
+   *
+   * 现在的设计:只换样式,不动内容。
+   *   - 替换 shadow root 里的 <style> 元素 textContent(新 CSS)
+   *   - 重建 panel 顶部的 4 角装饰(根据新 skin.layout.cornerGlow 决定存在/缺失)
+   *   - 更新 host/panel 上的 data-* 属性(CSS 选不同状态用)
+   *   - msgEl 整个子树保留 → 所有 DOM 节点 + 事件 handler 都在
+   *
+   * 关键点:用 querySelector('style') 找到已注入的 style 元素,直接改 textContent
+   *   比 removeChild+appendChild 更稳,引用不变。
+   */
+  applySkin(skinOrName: string | Skin): void {
+    const newSkin =
+      typeof skinOrName === 'string'
+        ? SkinRegistry.instance().get(skinOrName)
+        : skinOrName;
+    if (!newSkin) {
+      console.warn('[AIAgent SDK] applySkin: skin not found');
+      return;
+    }
+    if (!this.mounted || !this.host || !this.shadow || !this.panel) {
+      // 还没 mount —— 这次 applySkin 实际上会被 init 后的第一次 mount 覆盖
+      this.skin = newSkin;
+      return;
+    }
+    this.skin = newSkin;
+
+    // 1) 替换 CSS(找到已注入的 <style> 元素,改 textContent,引用不变)
+    const styleEl = this.shadow.querySelector('style');
+    if (styleEl) styleEl.textContent = this.skin.css || WIDGET_CSS;
+
+    // 2) 更新 host 上的 data-* 属性
+    this.host.setAttribute('data-skin', this.skin.name);
+    this.host.setAttribute('data-status-dot', this.skin.layout.statusDotStyle);
+    this.host.setAttribute('data-send-icon', this.skin.layout.sendIcon);
+    this.host.setAttribute('data-message-enter', this.skin.layout.messageEnter);
+    this.host.setAttribute('data-bubble-anim', this.skin.layout.bubbleAnimation);
+
+    // 3) 重建 4 角:有 → 无(老 4 角保留也无害,会按旧 CSS 不显示;但新 skin 不应有 → 删)
+    //    无 → 有(插入 4 个 div)
+    const existingCorners = this.panel.querySelectorAll('.aiagent-sdk-corner');
+    if (!this.skin.layout.cornerGlow) {
+      // 新 skin 不需要 4 角 → 全删
+      existingCorners.forEach((c) => c.remove());
+    } else if (existingCorners.length === 0) {
+      // 新 skin 需要 4 角但旧 skin 没有 → 插入 4 个,放在 panel 最前面
+      const cornerHTML = [
+        '<div class="aiagent-sdk-corner aiagent-sdk-corner-tl" aria-hidden="true"></div>',
+        '<div class="aiagent-sdk-corner aiagent-sdk-corner-tr" aria-hidden="true"></div>',
+        '<div class="aiagent-sdk-corner aiagent-sdk-corner-bl" aria-hidden="true"></div>',
+        '<div class="aiagent-sdk-corner aiagent-sdk-corner-br" aria-hidden="true"></div>',
+      ].join('');
+      // 用 DOM 解析而非 innerHTML 拼接(避免破坏现有子节点引用)
+      const tmp = document.createElement('div');
+      tmp.innerHTML = cornerHTML;
+      while (tmp.firstChild) {
+        this.panel.insertBefore(tmp.firstChild, this.panel.firstChild);
+      }
+    }
+    // 4) 切换瞬间闪光 + 鼠标光斑重置
+    this.panel.classList.add('aiagent-sdk-skin-just-changed');
+    setTimeout(() => {
+      if (this.panel) this.panel.classList.remove('aiagent-sdk-skin-just-changed');
+    }, 400);
+    this.panel.style.setProperty('--aia-mx', '50%');
+    this.panel.style.setProperty('--aia-my', '50%');
+  }
+
+  /** 暴露当前皮肤(agent 调) */
+  getSkin(): Skin {
+    return this.skin;
   }
 
   open(): void {

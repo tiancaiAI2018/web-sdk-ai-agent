@@ -49,6 +49,14 @@ export interface AIAgentOptions {
   demoTools?: boolean;
   /** 自定义"录单"工具列表。demoTools=true 但未传 → 用 SDK 内置默认 schema。 */
   demoOrderTools?: ToolDef[];
+  /**
+   * 皮肤名。可选:
+   *   - 'iridescent-bloom' (默认,油彩/毛玻璃)
+   *   - 'classic'           (极简白底)
+   *   - 自定义注册名(registerSkin 后可用)
+   * 跟 theme 不冲突:skin 决定"布局/动画",theme 决定"色板"(主题切换仍走 setTheme)
+   */
+  skin?: string;
 }
 
 // ====================================================================

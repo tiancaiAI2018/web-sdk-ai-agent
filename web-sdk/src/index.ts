@@ -24,6 +24,7 @@ export {
   cancelToolResult,
   renderToolResultFailedCard,
   resumePendingToolResults,
+  changeSkinTool,
   type ToolCtx,
 } from './core/tools';
 export {
@@ -40,7 +41,17 @@ export {
   appendMessage,
 } from './ui/components/message';
 export { createTypingEl, appendTyping } from './ui/components/typing';
-export { WIDGET_CSS } from './ui/styles';
+export { WIDGET_CSS, SKIN_NAME, DEFAULT_SKIN_NAME } from './ui/styles';
+// 皮肤系统 — 用户可 registerSkin() 加自定义皮肤,setSkin() 运行时切换
+export {
+  IRIDESCENT_BLOOM,
+  CLASSIC,
+  AURORA,
+  SkinRegistry,
+  skinForTheme,
+  paletteAttr,
+} from './core/skin';
+export type { Skin, SkinLayout, Palette } from './core/skin';
 
 // 类型导出
 export type {

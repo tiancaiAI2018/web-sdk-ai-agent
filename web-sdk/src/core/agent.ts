@@ -51,6 +51,7 @@ import {
 } from './extract';
 import { Widget } from '../ui/widget';
 import { applyTheme, DEFAULT_THEME } from '../ui/theme';
+import { Skin, SkinRegistry } from './skin';
 import { appendMessage, createMessageEl } from '../ui/components/message';
 import {
   appendTyping,
@@ -110,6 +111,25 @@ const DEFAULT_DEMO_TOOLS: ToolDef[] = [
   },
 ];
 
+/**
+ * 换肤快照:扫描 msgEl 里的卡 → 结构化数据 → 新 mount 后重放
+ *
+ * 为什么需要这个类型:
+ *   _messages 数组只存 user/assistant 文字;thinking/tool 卡都是 stream 阶段
+ *   直接挂到 DOM 的,没存进 _messages。destroy 时 msgEl 整个被丢,新 mount
+ *   后没法从 _messages 恢复。所以 setSkin 走"快照 + 重放"路线:destroy 前
+ *   把所有卡的状态提取成 CardSnapshot,新 mount 后用 _renderCardSnapshots 重放。
+ */
+type CardSnapshot =
+  | { kind: 'thinking'; content: string; done: boolean }
+  | {
+      kind: 'tool';
+      tool: string;
+      args: Record<string, unknown>;
+      state: 'delta' | 'pending' | 'confirmed' | 'cancelled' | 'done' | 'success';
+      bodyText: string;
+    };
+
 export class AIAgent {
   // ===== init 时填的字段(host-page.html demo 读 agent._opts)=====
   endpoint!: string;
@@ -130,6 +150,8 @@ export class AIAgent {
     clientPrefix: string;
     demoTools: boolean;
     demoOrderTools: ToolDef[];
+    /** 皮肤名(iridescent-bloom / classic / 自定义) */
+    skin: string;
   };
 
   // ===== 内部状态 =====
@@ -141,6 +163,14 @@ export class AIAgent {
   _messages: Message[] = [];
   _chatSessionId: string | null = null;
   _activeTools: string[] = [];
+  /**
+   * 内置待注册工具 — 静态 list,接受 registerBuiltinTool 的工具定义。
+   * 用户首次 _sendUserMessage 时,SDK 自动把这份 list 里所有工具
+   * 注册到 chat session 的 sid 下(后端 schema + 本地 _tools onCall 同步)。
+   * 关键点:必须用 chat session 的 sid(由 _chatSessionId 提供),
+   * 不能用 demo session 的 sid —— 否则主对话 stream 看不到工具。
+   */
+  static _builtinTools: ToolDef[] = [];
   _extractOnCall: ((payload: Record<string, unknown>) => unknown) | null = null;
   _pendingToolCall: PendingToolCall | null = null;
   _demoSessionId: string | null = null;
@@ -181,6 +211,7 @@ export class AIAgent {
       clientPrefix: opts.clientPrefix || 'app',
       demoTools: !!opts.demoTools,
       demoOrderTools: opts.demoOrderTools || DEFAULT_DEMO_TOOLS,
+      skin: opts.skin || 'iridescent-bloom',
     };
 
     // ===== 挂载浮窗 =====
@@ -192,6 +223,7 @@ export class AIAgent {
       onPanelOpen: () => {
         /* no-op,保留钩子 */
       },
+      onCycleSkin: (nextName: string) => this.setSkin(nextName),
     });
     this._widget.mount();
 
@@ -268,6 +300,32 @@ export class AIAgent {
     return registerRemote(this.endpoint, token, sessionId, schemaOnly);
   }
 
+  /**
+   * 把 AIAgent._builtinTools 里所有工具注册到 chat session(用户首次 stream 时调一次)。
+   * 关键:用 _chatSessionId 跟 _sendUserMessage 里发 stream 用同一个 sid,
+   *   这样后端 LLM 在该 stream 里能看到这些工具,SDK 端 _getLocalTool 也能找到 onCall。
+   * 不 await —— _sendUserMessage 不能因为 register 失败而阻塞(stream 本体更重要,
+   *   失败仅 warn,跟 demo tools 的 catch 风格一致)。
+   */
+  private _registerBuiltinToolsForChatSession(sid: string): void {
+    if (AIAgent._builtinTools.length === 0) return;
+    this._internalRegister(sid, AIAgent._builtinTools.slice())
+      .then(() => {
+        for (const t of AIAgent._builtinTools) {
+          if (this._activeTools.indexOf(t.name) < 0) {
+            this._activeTools.push(t.name);
+          }
+        }
+        console.log(
+          '[AIAgent SDK 🧰 内置工具已注册到 chat session]',
+          AIAgent._builtinTools.map((t) => t.name).join(', ')
+        );
+      })
+      .catch((e) => {
+        console.warn('[AIAgent SDK] builtin tools register failed:', e);
+      });
+  }
+
   /** 内部:本地查 tool 定义 */
   _getLocalTool(sessionId: string, name: string) {
     return this._tools.get(sessionId, name);
@@ -284,6 +342,26 @@ export class AIAgent {
 
   stopExtractSession(): void {
     stopExtractSession(this._extractCtx());
+  }
+
+  /**
+   * 注册"系统级内置工具"到所有 AIAgent 实例 —— 用户在 html 调用:
+   *   AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
+   * 注意:这里接受的是工具定义(带 onCall),SDK 在用户首次发消息时
+   *   把它注册到 chat session 的 sid,跟主对话 stream 同步。
+   * 跟 registerTools 的区别:registerBuiltinTool 是 SDK 内部机制,
+   *   不需要用户自己挑 sid(SDK 自动用 _chatSessionId)。
+   */
+  static registerBuiltinTool(tool: ToolDef): void {
+    if (!tool || !tool.name) {
+      console.warn('[AIAgent SDK] registerBuiltinTool: invalid tool');
+      return;
+    }
+    // 同一 name 多次注册覆盖
+    AIAgent._builtinTools = AIAgent._builtinTools.filter(
+      (t) => t.name !== tool.name
+    );
+    AIAgent._builtinTools.push(tool);
   }
 
   /** 浮窗 📋 按钮 */
@@ -333,6 +411,172 @@ export class AIAgent {
     if (this._widget) applyTheme(this._widget, opts.theme);
   }
 
+  /**
+   * 运行时切换皮肤(热切换)。语义:
+   *   1. 缓存当前 _messages 历史
+   *   2. widget.applySkin(name) → 销毁旧 DOM + 用新 skin 重 mount + 保留 isOpen
+   *   3. 用 _renderHistory 把消息历史重放
+   * 老 theme 字段不动;皮肤和主题正交(theme 改色板,skin 改布局/动画)
+   */
+  setSkin(name: string): void {
+    if (!this._widget) return;
+    // 取皮肤验证一下,免得传错名走到默认兜底
+    const skin = SkinRegistry.instance().get(name);
+    if (!skin) {
+      console.warn('[AIAgent SDK] setSkin: skin not found:', name);
+      return;
+    }
+    // 委托给 widget 局部热更新 —— 不再 destroy+mount,所以 msgEl 子树、事件 handler、
+    // 思考/工具卡状态 全部保留。
+    // 之前在 destroy 前 _snapshotCards + 之后 _renderCardSnapshots 的复杂逻辑全废
+    // (那段是 destroy+mount 时代的过渡方案,根上不解决"丢内容"问题)。
+    this._widget.applySkin(name);
+  }
+
+  /**
+   * 注册自定义皮肤(高级用户)。调用后,该皮肤名即可用于 init({skin}) 或 setSkin()。
+   * 重复 register 同名皮肤会覆盖。
+   */
+  registerSkin(skin: Skin): void {
+    SkinRegistry.instance().register(skin);
+  }
+
+  /**
+   * 重放消息历史 —— setSkin 热切换时用。复用 appendMessage,保证:
+   *   - 跟初次发送走同一条路径(同一份 CSS 类、同一份 layout)
+   *   - 流式占位(typing)不会被错误重放(它们不在 _messages 里)
+   *   - tool role 由 _snapshotCards/_renderToolSnapshot 走专门路径(因为 _messages 里的
+   *     tool message 丢了卡状态,需要从 DOM 快照恢复)
+   */
+  private _renderHistory(messages: ReadonlyArray<Message>): void {
+    if (!this._widget) return;
+    const refs = this._widget.getRefs();
+    if (!refs) return;
+    for (const m of messages) {
+      if (m.role === 'tool') continue;  // 工具卡由 _snapshotCards → _renderToolSnapshot 处理
+      this._renderMsg(m.role, m.text);
+    }
+  }
+
+  // ====================================================================
+  // 换肤快照:扫描当前 msgEl 的卡(思考 + 工具)→ 结构化数据 → 新 mount 后重放
+  // ====================================================================
+
+  /** 思考卡快照:body HTML + done 状态 */
+  private _snapshotThinkingCard(el: HTMLElement): { content: string; done: boolean } {
+    const body = el.querySelector('.aiagent-sdk-thinking-body') as HTMLElement | null;
+    return {
+      content: body ? body.innerHTML : '',
+      done: el.classList.contains('aiagent-sdk-thinking-done'),
+    };
+  }
+
+  /** 工具卡快照:tool 名 + 完整 args + 状态 + body 文本 */
+  private _snapshotToolCard(el: HTMLElement): {
+    tool: string;
+    args: Record<string, unknown>;
+    state: 'delta' | 'pending' | 'confirmed' | 'cancelled' | 'done' | 'success';
+    bodyText: string;
+  } {
+    const tool = el.getAttribute('data-tool') || '';
+    // args 优先从 data-args(appendToolCard 时存了);fallback 从 body 文本解析
+    const argsAttr = el.getAttribute('data-args');
+    let args: Record<string, unknown> = {};
+    if (argsAttr) {
+      try { args = JSON.parse(argsAttr); } catch { args = {}; }
+    } else {
+      const bodyText = (el.querySelector('.aiagent-sdk-tool-body') as HTMLElement)?.textContent || '';
+      try { args = JSON.parse(bodyText); } catch { args = {}; }
+    }
+    // 状态机:看 class 列表(状态切换是 class 加/减,所以这里读 class 就能还原)
+    // 顺序很关键:--success 必须最先匹配(因为 markToolCardSuccess 会同时加 --success + --confirmed,
+    //   --confirmed 是中间过渡态,--success 才是"已完成"的最终态)
+    let state: 'delta' | 'pending' | 'confirmed' | 'cancelled' | 'done' | 'success' = 'pending';
+    if (el.classList.contains('aiagent-sdk-tool-success')) state = 'success';
+    else if (el.classList.contains('aiagent-sdk-tool-card--delta')) state = 'delta';
+    else if (el.classList.contains('aiagent-sdk-tool-cancelled')) state = 'cancelled';
+    else if (el.classList.contains('aiagent-sdk-tool-done')) state = 'done';
+    else if (el.classList.contains('aiagent-sdk-tool-confirmed')) state = 'confirmed';
+    else if (el.classList.contains('aiagent-sdk-tool-card--pending')) state = 'pending';
+    // body 累积文本(delta 阶段用,其他阶段空)
+    const bodyText =
+      state === 'delta'
+        ? (el.querySelector('.aiagent-sdk-tool-body') as HTMLElement)?.textContent || ''
+        : '';
+    return { tool, args, state, bodyText };
+  }
+
+  /**
+   * 扫描当前 msgEl 里所有 .aiagent-sdk-thinking-card / .aiagent-sdk-tool-card,
+   * 按 DOM 顺序返回快照列表。setSkin 在 destroy 前调一次。
+   */
+  private _snapshotCards(): CardSnapshot[] {
+    const refs = this._widget?.getRefs();
+    if (!refs) return [];
+    const out: CardSnapshot[] = [];
+    // querySelectorAll 按 DOM 顺序返回,所以穿插的卡能正确捕获
+    const all = refs.msgEl.querySelectorAll(
+      '.aiagent-sdk-thinking-card, .aiagent-sdk-tool-card'
+    );
+    all.forEach((el) => {
+      if (el.classList.contains('aiagent-sdk-thinking-card')) {
+        const s = this._snapshotThinkingCard(el as HTMLElement);
+        out.push({ kind: 'thinking', ...s });
+      } else {
+        const s = this._snapshotToolCard(el as HTMLElement);
+        out.push({ kind: 'tool', ...s });
+      }
+    });
+    return out;
+  }
+
+  /**
+   * 重放快照:换肤后新 mount,把所有卡按原顺序追加到 msgEl 末尾。
+   * 简化策略:_renderHistory 先渲染 user/assistant 文字,再按卡顺序追加卡。
+   * 位置精度:卡会被追加在消息流末尾(而不是穿插位置),但内容/状态全在。
+   *   后续如果用户嫌位置不对,再升级 _messages 加 type 标记精确还原。
+   */
+  private _renderCardSnapshots(snapshots: ReadonlyArray<CardSnapshot>): void {
+    if (!this._widget) return;
+    const refs = this._widget.getRefs();
+    if (!refs) return;
+    for (const snap of snapshots) {
+      if (snap.kind === 'thinking') {
+        const card = createThinkingCard(refs.msgEl);
+        const body = card.querySelector('.aiagent-sdk-thinking-body') as HTMLElement | null;
+        if (body) body.innerHTML = snap.content;
+        if (snap.done) finalizeThinking(card);
+      } else {
+        // tool 卡:根据 state 选择正确的创建入口
+        if (snap.state === 'delta' && Object.keys(snap.args).length === 0) {
+          // 还在流式累积阶段(没完整 args)—— 走 delta 卡 + body 文本
+          const card = appendToolCallDelta(refs.msgEl, snap.tool || '...', snap.tool);
+          if (snap.bodyText) updateToolCallDelta(card, snap.bodyText);
+        } else {
+          // 完整 args 阶段:appendToolCard 重建 + 按 state 切 class
+          const card = appendToolCard(refs.msgEl, snap.tool, snap.args);
+          if (snap.state === 'pending') {
+            // 默认就是 pending(appendToolCard 没用 --delta 也没用 --pending,
+            // 但 --pending 才有蓝色左边线高亮)—— 显式加一下
+            card.classList.add('aiagent-sdk-tool-card--pending');
+          } else if (snap.state === 'confirmed' || snap.state === 'success') {
+            // confirmed(用户点确认)或 success(工具结果已 2xx 提交)都走 markToolCardSuccess
+            // 它的内部判断:有 --pending 时转 --confirmed,加 --success 改 status 文字
+            // —— 这是我们要的"已完成"视觉
+            markToolCardSuccess(card, '✓ 完成');
+          } else if (snap.state === 'cancelled') {
+            card.classList.add('aiagent-sdk-tool-cancelled');
+            const status = card.querySelector('.aiagent-sdk-tool-status');
+            if (status) status.textContent = '✕ 已取消';
+          } else if (snap.state === 'done') {
+            // done 是折叠态(48px),用 markToolCardSuccess 触发折叠
+            markToolCardSuccess(card, '✓ 完成');
+          }
+        }
+      }
+    }
+  }
+
   // ====================================================================
   // 内部:token / 新会话 / 发送
   // ====================================================================
@@ -357,6 +601,104 @@ export class AIAgent {
     if (this._widget && this._opts.welcomeMessage) {
       this._widget.setWelcome(this._opts.welcomeMessage);
     }
+  }
+
+  /**
+   * Stream 通用文本 lifecycle 工厂 —— _sendUserMessage 和 _postToolResultInner 共用
+   *
+   * 解决的问题:
+   *   chat/stream 和 tools/result 的 SSE 都是"LLM 流式输出",协议一样;
+   *   文本渲染、typing 光标、空 div 删除、滚底、错误转 system 消息 —— 都该走同一份逻辑。
+   *   之前 tools.ts 自己写了一份几乎一样的内联代码,导致两边行为漂移(比如某天
+   *   onDone 改了空 div 处理,resume 漏改就会出 bug)。
+   *
+   * 用法:
+   *   const handlers = buildAgentStreamHandlers({
+   *     typing, msgEl,
+   *     onUpgrade: () => { /* 主 stream 才有的事情,如 finalizeThinking *\/ },
+   *     onSubmitted: () => submitted,  // 主 stream 用来判断 tool_call 是否已提交
+   *     markBusyDone: () => self._setBusy(false),
+   *     appendSystem: (text) => self._appendMsg('system', text),
+   *   });
+   *   return consumeSseStream(r.body, handlers.onChunk, handlers.onDone,
+   *                           handlers.onError, onToolCall);
+   *
+   * 注:onThinking / onToolCall* 留在 caller 内部,因为不同 stream 差异太大
+   *   (主 stream 完整决策点 + thinking 卡片;resume 简化版 + 无 thinking 卡片)。
+   */
+  static buildStreamHandlers(opts: {
+    typing: HTMLElement;
+    msgEl: HTMLElement;
+    /** 第一次有内容到达时调(主 stream 用来收思考卡片) */
+    onUpgrade?: () => void;
+    /** 错误兜底 — 默认 clearTypingParticles + 删 typing + appendSystem('⚠️ ...') */
+    onErrorFallback?: (msg: string) => void;
+    /** stream 结束时调(主 stream 用来关 busy,resume 也用来关 busy) */
+    onDoneCleanup?: () => void;
+    /**
+     * onDone 时把 assistant 累积文本写回 _messages(主 stream 用,resume 留空)
+     * 不传 = 不写回。**关键**:之前 _sendUserMessage 写死了 typing 里 HTML 不会进 _messages,
+     *   换肤 destroy 后 DOM 丢了,assistant 文字就消失。setSkin 重放时拿不到。
+     */
+    onAssistantText?: (text: string) => void;
+  }): {
+    onChunk: (ev: SSEEvent) => void;
+    onDone: () => void;
+    onError: (e: Error) => void;
+    /** 闭包状态 —— 暴露给 caller 看"是否已经替换 typing" */
+    isReplaced: () => boolean;
+    /** 取当前累积文本 —— resume 流不替换 typing 但可能用 */
+    getAssistantBuf: () => string;
+  } {
+    let assistantBuf = '';
+    let replaced = false;
+
+    function upgrade() {
+      if (replaced) return;
+      replaced = true;
+      clearTypingParticles(opts.typing);
+      markTypingActive(opts.typing);
+      if (opts.onUpgrade) opts.onUpgrade();
+    }
+
+    return {
+      onChunk: (ev) => {
+        assistantBuf += ev.data || '';
+        upgrade();
+        opts.typing.innerHTML = renderMarkdownLite(assistantBuf);
+        decorateImages(opts.typing);
+        opts.msgEl.scrollTop = opts.msgEl.scrollHeight;
+      },
+      onDone: () => {
+        if (!replaced && !assistantBuf) {
+          // 整个 stream 没文字(只有 thinking + tool_call)→ 删 typing 避免空框
+          opts.typing.remove();
+        } else {
+          upgrade();
+          unmarkTypingActive(opts.typing);
+          opts.typing.innerHTML = renderMarkdownLite(assistantBuf);
+          decorateImages(opts.typing);
+        }
+        // 把累积的 assistant 文本写回 _messages(主 stream 用,resume 不传就不写)
+        if (opts.onAssistantText) opts.onAssistantText(assistantBuf);
+        opts.msgEl.scrollTop = opts.msgEl.scrollHeight;
+        if (opts.onDoneCleanup) opts.onDoneCleanup();
+      },
+      onError: (e) => {
+        clearTypingParticles(opts.typing);
+        if (replaced) {
+          unmarkTypingActive(opts.typing);
+          opts.typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
+          opts.typing.textContent = '⚠️ ' + e.message;
+        } else {
+          opts.typing.remove();
+          if (opts.onErrorFallback) opts.onErrorFallback('⚠️ ' + e.message);
+        }
+        if (opts.onDoneCleanup) opts.onDoneCleanup();
+      },
+      isReplaced: () => replaced,
+      getAssistantBuf: () => assistantBuf,
+    };
   }
 
   /** 内部:输入栏发送 */
@@ -385,27 +727,44 @@ export class AIAgent {
     const refs = this._widget!.getRefs()!;
     // assistant 消息占位(内部是 5 颗粒子,等第一次 onChunk 到达时清空填文本)
     const typing = appendTyping(refs.msgEl);
-    let assistantBuf = '';
     let thinkingBuf = '';
     const self = this;
     const activeSnapshot = this._activeTools.slice();
     const onCallSnapshot = this._extractOnCall;
     let submitted = false;
-    let replaced = false; // typing 第一次变 assistant 消息的标志
 
-    function upgradeTyping() {
-      if (!replaced) {
-        replaced = true;
-        // 第一次有内容到达:清空粒子 + 流式光标 active
-        clearTypingParticles(typing);
-        markTypingActive(typing);
-        // 模型开始输出正文 → 思考卡片已完成使命,收起
+    // 共用 lifecycle 工厂:onChunk / onDone / onError 跟 _postToolResultInner 完全同源
+    const lifecycle = AIAgent.buildStreamHandlers({
+      typing,
+      msgEl: refs.msgEl,
+      onUpgrade: () => {
+        // 模型开始输出正文 → 思考卡片已完成使命,收起(主 stream 专属)
         if (self._thinkingCard) {
           finalizeThinking(self._thinkingCard);
           self._thinkingCard = null;
         }
-      }
-    }
+      },
+      onErrorFallback: (msg) => self._appendMsg('system', msg),
+      onAssistantText: (text) => {
+        // 把 assistant 文本写回 _messages —— setSkin 重放时需要
+        // 注意:空文本不写(避免占位空消息;空 stream 已经删了 typing)
+        if (!text) return;
+        // 用 push 而不是 _appendMsg —— _appendMsg 会再次渲染 DOM(setSkin 时 typing 还在,
+        // 这里只是 stream 期间累积文本,不是真的"用户发消息"。重渲染走 typing.innerHTML
+        // 即可,真正持久化靠 _messages 数组)
+        self._messages.push({ role: 'assistant', text });
+      },
+      onDoneCleanup: () => {
+        // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
+        // 避免用户在工具结果回传完成前又发新消息撞 409
+        if (!submitted) self._setBusy(false);
+        // 思考完成 → 卡片收起
+        if (self._thinkingCard) {
+          finalizeThinking(self._thinkingCard);
+          self._thinkingCard = null;
+        }
+      },
+    });
 
     const postOpts: {
       sessionId?: string;
@@ -421,53 +780,9 @@ export class AIAgent {
       onToolCallEnd: (parsed: ToolCallEndPayload) => void;
     } = {
       message: text,
-      onChunk: (ev: SSEEvent) => {
-        assistantBuf += ev.data || '';
-        upgradeTyping();
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
-        refs.msgEl.scrollTop = refs.msgEl.scrollHeight;
-      },
-      onDone: () => {
-        if (!replaced && !assistantBuf) {
-          // 整个 stream 没有文字帧(只有 thinking + tool_call)→
-          // typing 占位 div 一直是粒子状态,没有文字内容,删掉避免空白框
-          typing.remove();
-        } else {
-          upgradeTyping();
-          unmarkTypingActive(typing);
-          typing.innerHTML = renderMarkdownLite(assistantBuf);
-          decorateImages(typing);
-        }
-        refs.msgEl.scrollTop = refs.msgEl.scrollHeight;
-        // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
-        // 避免用户在工具结果回传完成前又发新消息撞 409
-        if (!submitted) self._setBusy(false);
-        // 思考完成 → 卡片收起
-        if (self._thinkingCard) {
-          finalizeThinking(self._thinkingCard);
-          self._thinkingCard = null;
-        }
-      },
-      onError: (e: Error) => {
-        // 错误时清掉粒子(占位 div 转为 system 消息)
-        clearTypingParticles(typing);
-        if (replaced) {
-          unmarkTypingActive(typing);
-          typing.className = 'aiagent-sdk-msg aiagent-sdk-msg-system';
-          typing.textContent = '⚠️ 错误:' + e.message;
-        } else {
-          typing.remove();
-          self._appendMsg('system', '⚠️ 错误:' + e.message);
-        }
-        self._setBusy(false);
-        submitted = true; // 错误时也不让 _postToolResult 接管 busy
-        // 出错时也收起思考卡片
-        if (self._thinkingCard) {
-          finalizeThinking(self._thinkingCard);
-          self._thinkingCard = null;
-        }
-      },
+      onChunk: lifecycle.onChunk,
+      onDone: lifecycle.onDone,
+      onError: lifecycle.onError,
       onThinking: (text: string) => {
         // 累积 + 全量渲染(markdown)
         thinkingBuf += text;
@@ -608,6 +923,9 @@ export class AIAgent {
 
     if (!this._chatSessionId) {
       this._chatSessionId = this._opts.clientPrefix + ':user-' + Date.now();
+      // 首次 stream:把内置待注册工具 registerBuiltinTool 注册到 chat session
+      // 这一步同步做,否则本轮的 activeTools / tool_call 找不到工具
+      this._registerBuiltinToolsForChatSession(this._chatSessionId);
     }
     postOpts.sessionId = this._chatSessionId;
     postOpts.activeTools = activeSnapshot;
@@ -648,6 +966,24 @@ export class AIAgent {
     // stagger 索引 = 当前消息总数
     appendMessage(refs.msgEl, role, text, this._messages.length, data);
     this._messages.push({ role, text, data });
+  }
+
+  /**
+   * 纯 DOM 渲染,不写 _messages(给 setSkin 重放用)。
+   * 关键:不 push,否则换一次皮肤历史翻倍,反复换会指数级累加(用户实测 bug)。
+   * text 为空时(典型 case:tool role 的 placeholder),跳过 —— 不然会出现空消息框。
+   */
+  private _renderMsg(
+    role: MessageRole,
+    text: string,
+    data?: { tool: string; args: Record<string, unknown> }
+  ): void {
+    if (!this._widget) return;
+    const refs = this._widget.getRefs();
+    if (!refs) return;
+    // 空 text + 非 system 角色的就别渲染了(空 div 既不显示内容也占位)
+    if (!text && role !== 'system') return;
+    appendMessage(refs.msgEl, role, text, this._messages.length, data);
   }
 
   _appendTyping(): HTMLDivElement {
