@@ -105,6 +105,13 @@
       }]
     });
 
+    // ===== 1.5 注册一个"AI 可调换肤"工具(跟 submit_form 同款路径) =====
+    // SDK 提供 changeSkinTool 工厂(预制 schema),用户一行接入,onCall 内部调 agent.setSkin
+    // 产品决策在用户手里:不想给 AI 换肤能力,从下面数组删掉这一项即可
+    // SDK 内部会在用户首次发消息时,自动把此工具注册到 chat session 的 sid 下
+    // —— 不需要在 html 里手算 sid
+    AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
+
     // ===== 2. 备用:用 SDK API 显式启动录单(页面"开启录单"按钮) =====
     // demoTools=true 时浮窗已自带 📋 按钮,这个是给"想用 page-level 触发"的第三方示例
     document.getElementById('trigger-extract').addEventListener('click', function () {
