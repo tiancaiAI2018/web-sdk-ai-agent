@@ -487,6 +487,16 @@ export class AIAgent {
     SkinRegistry.instance().register(skin);
   }
 
+  /** 列出所有已注册皮肤名(含自定义) */
+  listSkins(): string[] {
+    return SkinRegistry.instance().list();
+  }
+
+  /** 列出所有已注册皮肤的详细信息(含 aiHint,供 LLM changeSkin 工具用) */
+  listSkinsWithInfo(): Array<{ name: string; aiHint: string }> {
+    return SkinRegistry.instance().listWithInfo();
+  }
+
   /**
    * 重放消息历史 —— setSkin 热切换时用。复用 appendMessage,保证:
    *   - 跟初次发送走同一条路径(同一份 CSS 类、同一份 layout)

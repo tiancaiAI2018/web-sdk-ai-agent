@@ -47,9 +47,24 @@
     <p><strong>临时工具</strong>:点击下方按钮追加,仅当前会话生效。点"新会话"后临时工具自动失效。</p>
     <button id="btn-add-ephemeral">追加临时工具(translate)</button>
     <button id="btn-remove-ephemeral">移除临时工具(translate)</button>
+    <button id="btn-add-createskin">追加临时工具(create_skin)</button>
     <button id="btn-toggle-changeskin">切换内置 changeSkin 开关</button>
     <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;">changeSkin: 开启 | 临时工具: 无</p>
     <div id="log-area" class="log-area">等待操作...</div>
+  </div>
+
+  <!-- 皮肤系统演示区 -->
+  <div class="demo-section" style="border-left-color:#8b5cf6; background:#f5f3ff;">
+    <h3 style="color:#6d28d9;">皮肤系统演示</h3>
+    <p><strong>内置皮肤</strong>:iridescent-bloom(默认油彩) / classic(极简白底) / aurora(极光)</p>
+    <p><strong>自定义皮肤</strong>:用 deriveSkin 从内置皮肤派生,只需覆盖差异部分</p>
+    <button id="btn-skin-iridescent">iridescent-bloom</button>
+    <button id="btn-skin-classic">classic</button>
+    <button id="btn-skin-aurora">aurora</button>
+    <button id="btn-skin-ocean" style="border-color:#a78bfa; background:#ede9fe;">注册并切换 ocean(自定义)</button>
+    <button id="btn-skin-sunset" style="border-color:#fb923c; background:#fff7ed;">注册并切换 sunset(自定义)</button>
+    <button id="btn-skin-list">列出所有皮肤</button>
+    <p id="skin-status" style="margin-top:8px;font-weight:bold;color:#6d28d9;">当前皮肤: iridescent-bloom</p>
   </div>
 
   <h3>对话触发</h3>
@@ -164,6 +179,104 @@
       log('已移除临时工具 translate');
     });
 
+    // 追加临时工具 create_skin:AI 调用后动态创建皮肤并注册,再用 change_skin 切换
+    var createSkinAdded = false;
+    document.getElementById('btn-add-createskin').addEventListener('click', function () {
+      if (createSkinAdded) {
+        log('临时工具 create_skin 已存在,跳过');
+        return;
+      }
+      agent.addEphemeralTools([{
+        name: 'create_skin',
+        description:
+          '动态创建一个新皮肤并注册到皮肤列表。创建后需用 change_skin 工具切换到新皮肤。\n' +
+          '只需指定皮肤名、风格描述和关键颜色,SDK 会从内置皮肤派生。\n' +
+          'base 可选 iridescent-bloom(深色油彩) 或 classic(浅色极简)。',
+        parameters: {
+          type: 'object',
+          properties: {
+            name: {
+              type: 'string',
+              description: '新皮肤的唯一名称,如 "ocean"、"sunset"、"forest"'
+            },
+            base: {
+              type: 'string',
+              enum: ['iridescent-bloom', 'classic'],
+              description: '基于哪个内置皮肤派生。深色主题选 iridescent-bloom,浅色选 classic'
+            },
+            description: {
+              type: 'string',
+              description: '皮肤风格简短描述,如 "深海蓝绿主题,适合开发者"'
+            },
+            primaryColor: {
+              type: 'string',
+              description: '主色调十六进制值,如 "#0ea5e9"(天蓝)、"#f97316"(橙)'
+            },
+            secondaryColor: {
+              type: 'string',
+              description: '次要色调十六进制值'
+            },
+            accentColor: {
+              type: 'string',
+              description: '强调色十六进制值'
+            },
+            fontStack: {
+              type: 'string',
+              enum: ['mixed', 'serif', 'mono', 'system'],
+              description: '字体风格。mixed=中英混排,serif=衬线,mono=等宽,system=系统'
+            }
+          },
+          required: ['name', 'base', 'description', 'primaryColor']
+        },
+        strict: false,
+        onCall: function (payload) {
+          var baseName = payload.base || 'iridescent-bloom';
+          var baseSkin = baseName === 'classic' ? AIAgent.CLASSIC : AIAgent.IRIDESCENT_BLOOM;
+
+          // 从 AI 提供的颜色生成 CSS 变量覆盖段
+          var p = payload.primaryColor || '#0ea5e9';
+          var s = payload.secondaryColor || p;
+          var a = payload.accentColor || p;
+          var skinName = payload.name;
+
+          var overrideCSS = baseSkin.css + '\n' + [
+            ':host([data-skin="' + skinName + '"]),',
+            ':host([data-skin="' + skinName + '"]) [data-skin="' + skinName + '"] {',
+            '  --aia-paint-1: ' + p + ';',
+            '  --aia-paint-2: ' + s + ';',
+            '  --aia-paint-3: ' + a + ';',
+            '  --aia-paint-4: ' + p + ';',
+            '  --aia-paint-5: ' + s + ';',
+            '  --aia-glow:    ' + p + ';',
+            '}'
+          ].join('\n');
+
+          var layoutOverride = {};
+          if (payload.fontStack) layoutOverride.fontStack = payload.fontStack;
+
+          var newSkin = AIAgent.deriveSkin(baseSkin, {
+            name: skinName,
+            css: overrideCSS,
+            layout: layoutOverride,
+            aiHint: payload.description || ('自定义皮肤: ' + skinName),
+          });
+
+          agent.registerSkin(newSkin);
+          log('AI 创建了新皮肤: ' + skinName + ' (基于 ' + baseName + ', 主色 ' + p + ')');
+
+          return {
+            ok: true,
+            skinName: skinName,
+            base: baseName,
+            message: '皮肤 "' + skinName + '" 已创建并注册。请用 change_skin 工具切换到该皮肤。'
+          };
+        }
+      }]);
+      createSkinAdded = true;
+      updateStatus();
+      log('已追加临时工具 create_skin(AI 可动态创建皮肤,仅当前会话生效)');
+    });
+
     // 切换 changeSkin 开关(需要重新 init 演示,这里用状态提示)
     document.getElementById('btn-toggle-changeskin').addEventListener('click', function () {
       changeskinEnabled = !changeskinEnabled;
@@ -175,11 +288,125 @@
 
     function updateStatus() {
       var statusEl = document.getElementById('status-line');
+      var tools = [];
+      if (ephemeralAdded) tools.push('translate');
+      if (createSkinAdded) tools.push('create_skin');
       statusEl.textContent = 'changeSkin: ' + (changeskinEnabled ? '开启' : '关闭')
-        + ' | 临时工具: ' + (ephemeralAdded ? 'translate' : '无');
+        + ' | 临时工具: ' + (tools.length ? tools.join(', ') : '无');
     }
 
-    // ===== 3. 打开浮窗对话 =====
+    // ===== 3. 皮肤系统演示 =====
+    function updateSkinStatus() {
+      var el = document.getElementById('skin-status');
+      var current = agent._widget ? agent._widget.getSkin().name : '(未挂载)';
+      var all = agent.listSkins().join(', ');
+      el.textContent = '当前皮肤: ' + current + ' | 已注册: ' + all;
+    }
+
+    // 内置皮肤:直接切换
+    document.getElementById('btn-skin-iridescent').addEventListener('click', function () {
+      agent.setSkin('iridescent-bloom');
+      updateSkinStatus();
+      log('切换皮肤 → iridescent-bloom');
+    });
+    document.getElementById('btn-skin-classic').addEventListener('click', function () {
+      agent.setSkin('classic');
+      updateSkinStatus();
+      log('切换皮肤 → classic');
+    });
+    document.getElementById('btn-skin-aurora').addEventListener('click', function () {
+      agent.setSkin('aurora');
+      updateSkinStatus();
+      log('切换皮肤 → aurora');
+    });
+
+    // 自定义皮肤 ocean:用 deriveSkin 从 iridescent-bloom 派生,只覆盖 CSS 变量
+    document.getElementById('btn-skin-ocean').addEventListener('click', function () {
+      // ocean 覆盖段:深蓝底 + 海洋色系
+      var oceanCSS = AIAgent.IRIDESCENT_BLOOM.css + '\n' + [
+        ':host([data-skin="ocean"]),',
+        ':host([data-skin="ocean"]) [data-skin="ocean"] {',
+        '  --aia-canvas-1: #0a192f;',
+        '  --aia-canvas-2: #0d2137;',
+        '  --aia-canvas-3: #112a45;',
+        '  --aia-bg:        #0a192f;',
+        '  --aia-text:      #ccd6f6;',
+        '  --aia-text-muted:#8892b0;',
+        '  --aia-text-faint:#495670;',
+        '  --aia-border:    rgba(100, 200, 255, 0.08);',
+        '  --aia-border-strong: rgba(100, 200, 255, 0.15);',
+        '  --aia-paint-1: #0ea5e9;  /* 天蓝 */',
+        '  --aia-paint-2: #06b6d4;  /* 青 */',
+        '  --aia-paint-3: #3b82f6;  /* 蓝 */',
+        '  --aia-paint-4: #6366f1;  /* 靛蓝 */',
+        '  --aia-paint-5: #8b5cf6;  /* 紫 */',
+        '  --aia-glow:    #0ea5e9;',
+        '  --aia-success: #22d3ee;',
+        '  --aia-error:   #f87171;',
+        '}'
+      ].join('\n');
+
+      var oceanSkin = AIAgent.deriveSkin(AIAgent.IRIDESCENT_BLOOM, {
+        name: 'ocean',
+        css: oceanCSS,
+        layout: { fontStack: 'mono' },  // 只改字体,其余继承 iridescent-bloom
+        aiHint: '深海蓝底 + 天蓝/青/靛蓝色系 + 等宽字体。开发者/极客风格。',
+      });
+      agent.registerSkin(oceanSkin);
+      agent.setSkin('ocean');
+      updateSkinStatus();
+      log('注册并切换自定义皮肤 ocean(deriveSkin 派生)');
+    });
+
+    // 自定义皮肤 sunset:从 classic 派生,暖橙色调
+    document.getElementById('btn-skin-sunset').addEventListener('click', function () {
+      var sunsetCSS = AIAgent.CLASSIC.css + '\n' + [
+        ':host([data-skin="sunset"]),',
+        ':host([data-skin="sunset"]) [data-skin="sunset"] {',
+        '  --aia-canvas-1: #fef3c7;',
+        '  --aia-canvas-2: #fde68a;',
+        '  --aia-canvas-3: #fcd34d;',
+        '  --aia-bg:        #fffbeb;',
+        '  --aia-text:      #78350f;',
+        '  --aia-text-muted:#92400e;',
+        '  --aia-text-faint:#b45309;',
+        '  --aia-border:    rgba(217, 119, 6, 0.15);',
+        '  --aia-border-strong: rgba(217, 119, 6, 0.25);',
+        '  --aia-paint-1: #f97316;  /* 橙 */',
+        '  --aia-paint-2: #ef4444;  /* 红 */',
+        '  --aia-paint-3: #f59e0b;  /* 琥珀 */',
+        '  --aia-paint-4: #ec4899;  /* 粉 */',
+        '  --aia-paint-5: #8b5cf6;  /* 紫 */',
+        '  --aia-glow:    #f97316;',
+        '  --aia-success: #10b981;',
+        '  --aia-error:   #ef4444;',
+        '}'
+      ].join('\n');
+
+      var sunsetSkin = AIAgent.deriveSkin(AIAgent.CLASSIC, {
+        name: 'sunset',
+        css: sunsetCSS,
+        layout: { cornerGlow: true, messageEnter: 'fade' },  // classic 基础上加 4 角
+        aiHint: '暖橙/琥珀/日落色调 + 4 角装饰。温暖/活力风格。',
+      });
+      agent.registerSkin(sunsetSkin);
+      agent.setSkin('sunset');
+      updateSkinStatus();
+      log('注册并切换自定义皮肤 sunset(deriveSkin 从 classic 派生)');
+    });
+
+    // 列出所有皮肤
+    document.getElementById('btn-skin-list').addEventListener('click', function () {
+      var names = agent.listSkins();
+      var infos = agent.listSkinsWithInfo();
+      log('已注册皮肤: ' + names.join(', '));
+      infos.forEach(function (info) {
+        log('  - ' + info.name + ': ' + info.aiHint);
+      });
+      updateSkinStatus();
+    });
+
+    // ===== 4. 打开浮窗对话 =====
     document.getElementById('trigger-chat').addEventListener('click', function () {
       agent.open();
     });

@@ -14,7 +14,8 @@
  */
 
 import { WIDGET_CSS } from './styles';
-import { Skin, SkinRegistry, skinForTheme } from '../core/skin';
+import { Skin, SkinRegistry, skinForTheme, resolveLayout } from '../core/skin';
+import type { SkinLayout } from '../core/skin';
 
 export interface WidgetOpts {
   title?: string;
@@ -70,6 +71,10 @@ export class Widget {
   private onMouseMove: ((e: MouseEvent) => void) | null = null;
   /** 当前皮肤(可在 mount 后由 applySkin 切换) */
   private skin: Skin;
+  /** 解析后的完整布局(缺省字段已补 DEFAULT_LAYOUT) */
+  private get layout(): Required<SkinLayout> {
+    return resolveLayout(this.skin.layout);
+  }
   /** 用户已输入但未发送的文本 —— applySkin 重 mount 时恢复 */
   private _pendingInput = '';
 
@@ -113,10 +118,10 @@ export class Widget {
     host.setAttribute('data-theme', this.opts.theme || 'ink');
     // 皮肤相关属性挂到 host(因为 :host() CSS 选择器只匹配 host 元素,不匹配 panel)
     host.setAttribute('data-skin', this.skin.name);
-    host.setAttribute('data-status-dot', this.skin.layout.statusDotStyle);
-    host.setAttribute('data-send-icon', this.skin.layout.sendIcon);
-    host.setAttribute('data-message-enter', this.skin.layout.messageEnter);
-    host.setAttribute('data-bubble-anim', this.skin.layout.bubbleAnimation);
+    host.setAttribute('data-status-dot', this.layout.statusDotStyle);
+    host.setAttribute('data-send-icon', this.layout.sendIcon);
+    host.setAttribute('data-message-enter', this.layout.messageEnter);
+    host.setAttribute('data-bubble-anim', this.layout.bubbleAnimation);
     document.body.appendChild(host);
     this.host = host;
 
@@ -151,7 +156,7 @@ export class Widget {
     // 注:data-skin / data-layout-* 属性都挂在 host 上(见上面 mount 头部),
     //   因为 CSS 的 :host([data-skin="aurora"]) 选择器只匹配 host 元素。
     // 4 角装饰:只有 skin.layout.cornerGlow=true 才生成 DOM
-    const cornerHTML = this.skin.layout.cornerGlow
+    const cornerHTML = this.layout.cornerGlow
       ? [
           '<div class="aiagent-sdk-corner aiagent-sdk-corner-tl" aria-hidden="true"></div>',
           '<div class="aiagent-sdk-corner aiagent-sdk-corner-tr" aria-hidden="true"></div>',
@@ -166,7 +171,7 @@ export class Widget {
       : '';
     // 发送按钮内容:svg / arrow 字符 / circle 空
     const sendIconHTML = (() => {
-      switch (this.skin.layout.sendIcon) {
+      switch (this.layout.sendIcon) {
         case 'svg': return SEND_ICON_SVG;
         case 'arrow': return '→';
         case 'circle': return '';
@@ -361,15 +366,15 @@ export class Widget {
 
     // 2) 更新 host 上的 data-* 属性
     this.host.setAttribute('data-skin', this.skin.name);
-    this.host.setAttribute('data-status-dot', this.skin.layout.statusDotStyle);
-    this.host.setAttribute('data-send-icon', this.skin.layout.sendIcon);
-    this.host.setAttribute('data-message-enter', this.skin.layout.messageEnter);
-    this.host.setAttribute('data-bubble-anim', this.skin.layout.bubbleAnimation);
+    this.host.setAttribute('data-status-dot', this.layout.statusDotStyle);
+    this.host.setAttribute('data-send-icon', this.layout.sendIcon);
+    this.host.setAttribute('data-message-enter', this.layout.messageEnter);
+    this.host.setAttribute('data-bubble-anim', this.layout.bubbleAnimation);
 
     // 3) 重建 4 角:有 → 无(老 4 角保留也无害,会按旧 CSS 不显示;但新 skin 不应有 → 删)
     //    无 → 有(插入 4 个 div)
     const existingCorners = this.panel.querySelectorAll('.aiagent-sdk-corner');
-    if (!this.skin.layout.cornerGlow) {
+    if (!this.layout.cornerGlow) {
       // 新 skin 不需要 4 角 → 全删
       existingCorners.forEach((c) => c.remove());
     } else if (existingCorners.length === 0) {

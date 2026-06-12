@@ -164,70 +164,8 @@ public class SessionManager {
 
         ReActAgent agent = getOrCreate(safe, activeTools);
         Msg userMsg = userMessage(text);
-        AtomicBoolean suspended = new AtomicBoolean(false);
-        AtomicReference<String> pendingName = new AtomicReference<>();
-        AtomicReference<String> pendingId = new AtomicReference<>();
-
-        return agent
-            .stream(List.of(userMsg), StreamOptions.defaults())
-            .doOnNext(event -> {
-                // AgentScope 触 TOOL_SUSPENDED 时,ToolUseBlock 可能在中间事件上,
-                // 也可能在最后的 isLast 帧上 —— 扫**所有**事件,任何一条带
-                // 非内部 ToolUseBlock 就标 suspended。
-                //
-                // **关键**:把 agent 放入 suspendedAgents 必须在 doOnNext 阶段完成,
-                // 而**不是** doOnComplete。doOnNext 是 flatMap 的上游,其副作用一定
-                // 先于该事件的 SSE 帧被 Spring 写入 response。SDK reader 一拿到
-                // `event: tool_call` 帧就 fire-and-forget 触发 onCall;若 onCall 极快
-                // (host-page demo 的同步 onCall 几 ms 就 return),POST /tools/result
-                // 可能在后端 agent.stream() signal onComplete 之前到达 —— 此时
-                // resume() 读 suspendedAgents 还是 null,误报 409 no_pending_tool_call。
-                // putIfAbsent 幂等:多次扫到同一个 tool_use 不会覆盖。
-                Msg m = event.getMessage();
-                if (m == null) return;
-                List<ToolUseBlock> tus;
-                try {
-                    tus = m.getContentBlocks(ToolUseBlock.class);
-                } catch (Exception e) {
-                    return;
-                }
-                if (tus == null) return;
-                for (ToolUseBlock tu : tus) {
-                    if (tu.getName() == null || tu.getName().startsWith("__")) continue;
-                    pendingId.set(tu.getId());
-                    pendingName.set(tu.getName());
-                    if (suspendedAgents.putIfAbsent(safe, agent) == null) {
-                        log.debug("Session {} suspended on tool {} ({}); awaiting /tools/result",
-                            safe, tu.getName(), tu.getId());
-                    }
-                    suspended.set(true);
-                    return;  // 只记第一个
-                }
-            })
-            .doOnComplete(() -> {
-                if (suspended.get()) {
-                    // doOnNext 阶段已放 suspendedAgents,这里只确认 + 记日志
-                    log.debug("Session {} stream complete (suspended on tool {} ({}))",
-                        safe, pendingName.get(), pendingId.get());
-                } else {
-                    // 正常完成:无工具调用,持久化
-                    agent.saveTo(session, safe);
-                    log.debug("Session {} saved (stream complete)", safe);
-                }
-            })
-            .doOnError(err -> {
-                // LLM 5xx / 网络中断 / 中途异常。
-                // 若已挂起(tool_use 已 emit 但 stream error),保留在 suspendedAgents
-                // —— resume() 的 doOnError 仍会清;且 /tools/result 可能仍想尝试喂结果。
-                // 若未挂起,evict 这个半成品 agent。
-                if (suspended.get()) {
-                    log.warn("Session {} stream error after suspend, agent stays suspended: {}",
-                        safe, err.toString());
-                } else {
-                    agents.remove(safe);
-                    log.warn("Session {} stream error, agent evicted: {}", safe, err.toString());
-                }
-            });
+        Flux<Event> eventFlux = agent.stream(List.of(userMsg), StreamOptions.defaults());
+        return withSuspensionDetection(eventFlux, safe, agent, "stream");
     }
 
     /**
@@ -274,12 +212,8 @@ public class SessionManager {
         log.debug("Session {} resuming with tool result ({} bytes)", safe,
             resultText == null ? 0 : resultText.length());
 
-        // 跟 stream() 完全同源的挂起检测:恢复后 LLM 可能再次调工具
-        AtomicBoolean reSuspended = new AtomicBoolean(false);
-        AtomicReference<String> pendingName = new AtomicReference<>();
-        AtomicReference<String> pendingId = new AtomicReference<>();
-
-        return Flux.<Event>defer(() -> {
+        // resume 需要防 AgentScope 的 isRunning 竞态(stream 不需要,因为 stream 是全新 agent)
+        Flux<Event> eventFlux = Flux.<Event>defer(() -> {
                     try {
                         return agent.stream(List.of(toolResult), StreamOptions.defaults());
                     } catch (IllegalStateException e) {
@@ -289,9 +223,36 @@ public class SessionManager {
                 .retryWhen(reactor.util.retry.Retry.fixedDelay(3, java.time.Duration.ofMillis(50))
                     .filter(t -> t instanceof IllegalStateException
                         && t.getMessage() != null
-                        && t.getMessage().contains("Agent is still running")))
+                        && t.getMessage().contains("Agent is still running")));
+
+        return withSuspensionDetection(eventFlux, safe, agent, "resume");
+    }
+
+    /**
+     * 挂起检测 —— stream 和 resume 共用。
+     *
+     * <p>扫描每个 Event 的 ToolUseBlock,如果 LLM 调了非内部工具 → 挂起;
+     * 否则正常完成 → saveTo。逻辑完全同源,避免两边漂移。
+     *
+     * @param eventFlux  agent.stream() 产生的原始事件流
+     * @param safe       已 sanitize 的 sessionId
+     * @param agent      当前 agent 实例
+     * @param label      日志标签("stream" / "resume"),区分来源
+     */
+    private Flux<Event> withSuspensionDetection(Flux<Event> eventFlux,
+                                                 String safe,
+                                                 ReActAgent agent,
+                                                 String label) {
+        AtomicBoolean suspended = new AtomicBoolean(false);
+        AtomicReference<String> pendingName = new AtomicReference<>();
+        AtomicReference<String> pendingId = new AtomicReference<>();
+
+        return eventFlux
             .doOnNext(event -> {
-                // 跟 stream() 同源:扫描 ToolUseBlock,检测是否再次挂起
+                // 扫描 ToolUseBlock:任何非内部工具调用 → 标记挂起
+                // 关键:putIfAbsent 必须在 doOnNext 阶段完成(不是 doOnComplete),
+                // 因为 SDK 可能在 SSE 帧到达后极快地 POST /tools/result,
+                // 此时 doOnComplete 可能还没跑完。
                 Msg m = event.getMessage();
                 if (m == null) return;
                 List<ToolUseBlock> tus;
@@ -306,33 +267,34 @@ public class SessionManager {
                     pendingId.set(tu.getId());
                     pendingName.set(tu.getName());
                     if (suspendedAgents.putIfAbsent(safe, agent) == null) {
-                        log.debug("Session {} re-suspended on tool {} ({}) after resume; awaiting /tools/result",
-                            safe, tu.getName(), tu.getId());
+                        log.debug("Session {} [{}] suspended on tool {} ({}); awaiting /tools/result",
+                            safe, label, tu.getName(), tu.getId());
                     }
-                    reSuspended.set(true);
+                    suspended.set(true);
                     return;
                 }
             })
             .doOnComplete(() -> {
-                if (reSuspended.get()) {
-                    // 恢复后 LLM 又调了工具 → 再次挂起,不 saveTo
-                    log.debug("Session {} resume complete (re-suspended on tool {} ({}))",
-                        safe, pendingName.get(), pendingId.get());
+                if (suspended.get()) {
+                    log.debug("Session {} [{}] complete (suspended on tool {} ({}))",
+                        safe, label, pendingName.get(), pendingId.get());
                 } else {
-                    // 正常完成:无再次工具调用,持久化
+                    // 正常完成:移出挂起池(resume 场景) + 持久化
                     suspendedAgents.remove(safe);
                     agent.saveTo(session, safe);
-                    log.debug("Session {} resumed and saved", safe);
+                    log.debug("Session {} [{}] complete and saved", safe, label);
                 }
             })
             .doOnError(err -> {
-                if (reSuspended.get()) {
-                    log.warn("Session {} resume error after re-suspend, agent stays suspended: {}",
-                        safe, err.toString());
+                if (suspended.get()) {
+                    // 已挂起但流出错:保留在挂起池,SDK 仍可尝试 /tools/result
+                    log.warn("Session {} [{}] error after suspend, agent stays suspended: {}",
+                        safe, label, err.toString());
                 } else {
+                    // 未挂起就出错:evict,让下次从干净状态开始
                     suspendedAgents.remove(safe);
                     agents.remove(safe);
-                    log.warn("Session {} resume error, evicted: {}", safe, err.toString());
+                    log.warn("Session {} [{}] error, evicted: {}", safe, label, err.toString());
                 }
             });
     }

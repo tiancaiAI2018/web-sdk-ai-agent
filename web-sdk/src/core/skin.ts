@@ -16,21 +16,31 @@
 import { IRIDESCENT_BLOOM_CSS } from '../ui/skins/iridescent-bloom';
 import { CLASSIC_CSS } from '../ui/skins/classic';
 
-/** 布局开关 —— 6 个维度,Widget 按这些决定生成什么 DOM / 走什么 CSS */
+/** 布局开关 —— 6 个维度,Widget 按这些决定生成什么 DOM / 走什么 CSS。全部可选,有默认值 */
 export interface SkinLayout {
-  /** 4 角是否要油彩飞溅(iridescent=true,classic=false) */
-  cornerGlow: boolean;
-  /** 顶部 status dot 风格:rainbow=虹彩旋转 / solid=单色 / pulse=脉冲 */
-  statusDotStyle: 'rainbow' | 'solid' | 'pulse';
-  /** 发送按钮:svg=真 SVG 箭头 / arrow=字符 / circle=空 */
-  sendIcon: 'svg' | 'arrow' | 'circle';
-  /** 消息入场动画:paint=墨水渗纸 / fade=淡入 / none=无 */
-  messageEnter: 'paint' | 'fade' | 'none';
-  /** 气泡呼吸:rotate=棱镜 / breathe=简单呼吸 / none=静态 */
-  bubbleAnimation: 'rotate' | 'breathe' | 'none';
-  /** 字体优先:mixed=中英混排 / serif=衬线 / mono=等宽 / system=系统 */
-  fontStack: 'mixed' | 'serif' | 'mono' | 'system';
+  /** 4 角是否要油彩飞溅(iridescent=true,classic=false)。默认 true */
+  cornerGlow?: boolean;
+  /** 顶部 status dot 风格。默认 'rainbow' */
+  statusDotStyle?: 'rainbow' | 'solid' | 'pulse';
+  /** 发送按钮样式。默认 'svg' */
+  sendIcon?: 'svg' | 'arrow' | 'circle';
+  /** 消息入场动画。默认 'paint' */
+  messageEnter?: 'paint' | 'fade' | 'none';
+  /** 气泡呼吸动画。默认 'rotate' */
+  bubbleAnimation?: 'rotate' | 'breathe' | 'none';
+  /** 字体优先。默认 'mixed' */
+  fontStack?: 'mixed' | 'serif' | 'mono' | 'system';
 }
+
+/** 默认布局(跟 IRIDESCENT BLOOM 一致),deriveSkin 和直接构造 Skin 时可展开覆盖 */
+export const DEFAULT_LAYOUT: Required<SkinLayout> = {
+  cornerGlow: true,
+  statusDotStyle: 'rainbow',
+  sendIcon: 'svg',
+  messageEnter: 'paint',
+  bubbleAnimation: 'rotate',
+  fontStack: 'mixed',
+};
 
 /** 调色板 hint —— 主题切换时用(IRIDESCENT 用,classic 不需要) */
 export type Palette = 'ink' | 'paper' | 'dark' | 'light';
@@ -41,8 +51,8 @@ export interface Skin {
   name: string;
   /** 注入到 shadow root 的 CSS(必须含 :host[data-theme] 等所有变量) */
   css: string;
-  /** 布局开关 —— Widget 据此生成对应 DOM / 加 data 属性 */
-  layout: SkinLayout;
+  /** 布局开关(可选字段,缺省值取 DEFAULT_LAYOUT) */
+  layout?: SkinLayout;
   /** 调色板 hint(可选,classic 皮肤一般不指定) */
   palette?: Palette;
   /**
@@ -51,6 +61,43 @@ export interface Skin {
    * 不传则 changeSkinTool 工厂会用默认 'no description' 占位。
    */
   aiHint?: string;
+}
+
+/**
+ * 将 SkinLayout 解析为完整布局(缺省字段填 DEFAULT_LAYOUT)。
+ * Widget 内部统一调这个,保证 layout 字段一定完整。
+ */
+export function resolveLayout(layout?: SkinLayout): Required<SkinLayout> {
+  return { ...DEFAULT_LAYOUT, ...layout };
+}
+
+/**
+ * 从已有皮肤派生新皮肤 —— 最常用的自定义方式。
+ *
+ * 只需覆盖差异部分:CSS 追加覆盖段、layout 只改需要变的字段。
+ * 典型用法(在 iridescent-bloom 上换色板):
+ * ```ts
+ * const mySkin = deriveSkin(IRIDESCENT_BLOOM, {
+ *   name: 'my-ocean',
+ *   css: IRIDESCENT_BLOOM.css + '\n' + oceanOverrideCSS,
+ *   layout: { fontStack: 'serif' },  // 只改字体,其余继承
+ *   aiHint: '海洋蓝绿主题',
+ * });
+ * agent.registerSkin(mySkin);
+ * ```
+ *
+ * @param base    基础皮肤(通常是内置的 IRIDESCENT_BLOOM / CLASSIC / AURORA)
+ * @param override 要覆盖的字段(css 会拼接,layout 会合并)
+ */
+export function deriveSkin(
+  base: Skin,
+  override: Partial<Omit<Skin, 'layout'>> & { layout?: SkinLayout }
+): Skin {
+  return {
+    ...base,
+    ...override,
+    layout: resolveLayout({ ...base.layout, ...override.layout }),
+  };
 }
 
 // ====================================================================
@@ -89,13 +136,8 @@ export const CLASSIC: Skin = {
 };
 
 /**
- * AURORA —— 极光绿青紫主题(同构 IRIDESCENT BLOOM,只换色板)
- *
- * 演示"快速做新皮肤"的最佳实践:
- *   - 复用 IRIDESCENT_BLOOM_CSS(同款布局/动画/4 角)
- *   - 末尾追加一段 [data-skin="aurora"] CSS 变量覆盖(把 5 色虹彩换成极光绿/青/紫)
- *   - 改 layout.fontStack 为 serif(适合"夜读"氛围)
- *   - 总改动:零新 CSS 结构,只改变量和 layout 字段
+ * AURORA —— 极光绿青紫主题,用 deriveSkin 从 IRIDESCENT BLOOM 派生。
+ * 只需覆盖 CSS 变量 + 改 fontStack,零新 CSS 结构。
  */
 const AURORA_OVERRIDE = `
 /* 极光主题 — 覆盖 :host 变量(只在挂 data-skin="aurora" 时生效) */
@@ -123,21 +165,12 @@ const AURORA_OVERRIDE = `
 }
 `;
 
-export const AURORA: Skin = {
+export const AURORA: Skin = deriveSkin(IRIDESCENT_BLOOM, {
   name: 'aurora',
-  // 复用 IRIDESCENT BLOOM 的 CSS,只追加极光变量覆盖段
   css: IRIDESCENT_BLOOM_CSS + '\n' + AURORA_OVERRIDE,
-  palette: 'ink',
+  layout: { fontStack: 'serif' },
   aiHint: '极光绿/青/紫 + 衬线字体 + 4 角油彩 + 深绿底。夜读/文艺风格。',
-  layout: {
-    cornerGlow: true,            // 跟 IRIDESCENT 一样有 4 角油彩
-    statusDotStyle: 'rainbow',   // 虹彩 status dot
-    sendIcon: 'svg',
-    messageEnter: 'paint',
-    bubbleAnimation: 'rotate',
-    fontStack: 'serif',          // 唯一布局差异:用衬线字体,营造"夜读"感
-  },
-};
+});
 
 // ====================================================================
 // 皮肤注册表
@@ -145,7 +178,9 @@ export const AURORA: Skin = {
 
 /**
  * 全局皮肤注册表 —— 简单 Map,get/has/list/register/remove。
- * 默认注册 2 个内置皮肤,用户可 register() 加自定义。
+ * 默认注册 3 个内置皮肤,用户可 register() 加自定义。
+ *
+ * register 时自动 resolveLayout,确保 layout 字段完整。
  */
 export class SkinRegistry {
   private static _instance: SkinRegistry | null = null;
@@ -164,11 +199,16 @@ export class SkinRegistry {
     return SkinRegistry._instance;
   }
 
+  /** 注册皮肤(layout 缺省字段自动补 DEFAULT_LAYOUT) */
   register(skin: Skin): void {
     if (!skin || !skin.name || !skin.css) {
       throw new Error('[AIAgent SDK] SkinRegistry.register: invalid skin');
     }
-    this._skins.set(skin.name, skin);
+    // 确保 layout 完整,用户构造 Skin 时可以只写差异字段
+    this._skins.set(skin.name, {
+      ...skin,
+      layout: resolveLayout(skin.layout),
+    });
   }
 
   /** 取皮肤。找不到时返回 IRIDESCENT_BLOOM(兜底) */
@@ -180,11 +220,20 @@ export class SkinRegistry {
     return this._skins.has(name);
   }
 
+  /** 列出所有已注册皮肤名 */
   list(): string[] {
     return Array.from(this._skins.keys());
   }
 
-  /** 测试用 —— 不允许删内置皮肤 */
+  /** 列出所有已注册皮肤的详细信息(含 aiHint) */
+  listWithInfo(): Array<{ name: string; aiHint: string }> {
+    return Array.from(this._skins.values()).map((s) => ({
+      name: s.name,
+      aiHint: s.aiHint || 'no description',
+    }));
+  }
+
+  /** 不允许删内置皮肤 */
   remove(name: string): boolean {
     if (name === IRIDESCENT_BLOOM.name || name === CLASSIC.name) {
       console.warn('[AIAgent SDK] cannot remove built-in skin:', name);

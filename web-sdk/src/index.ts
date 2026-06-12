@@ -43,8 +43,9 @@ export {
   CLASSIC,
   AURORA,
   SkinRegistry,
-  skinForTheme,
-  paletteAttr,
+  deriveSkin,
+  resolveLayout,
+  DEFAULT_LAYOUT,
 } from './core/skin';
 export type { Skin, SkinLayout, Palette } from './core/skin';
 

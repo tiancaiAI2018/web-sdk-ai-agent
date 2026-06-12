@@ -27,6 +27,15 @@
 
 import { AIAgent, createAIAgent } from '../core/agent';
 import { changeSkinTool } from '../core/tools';
+import {
+  IRIDESCENT_BLOOM,
+  CLASSIC,
+  AURORA,
+  SkinRegistry,
+  deriveSkin,
+  resolveLayout,
+  DEFAULT_LAYOUT,
+} from '../core/skin';
 import { loadFonts } from '../ui/fonts';
 import type { AIAgentOptions, ToolDef } from '../core/types';
 
@@ -47,6 +56,14 @@ const factory = createAIAgent();
   {
     changeSkinTool,
     registerBuiltinTool: AIAgent.registerBuiltinTool,
+    // 皮肤系统 — <script> 用户可直接 AIAgent.IRIDESCENT_BLOOM / AIAgent.deriveSkin(...)
+    IRIDESCENT_BLOOM,
+    CLASSIC,
+    AURORA,
+    SkinRegistry,
+    deriveSkin,
+    resolveLayout,
+    DEFAULT_LAYOUT,
   }
 );
 
