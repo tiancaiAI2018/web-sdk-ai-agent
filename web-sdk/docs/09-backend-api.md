@@ -162,6 +162,54 @@ data: {}
 }
 ```
 
+**响应:** SSE 流(与 `/stream` 完全一致)
+
+```
+event: thinking
+data: {"text": "根据工具结果继续推理..."}
+
+event: tool_call_start
+data: {"id": "tc_456", "name": "query_order"}
+
+event: tool_call_delta
+data: {"id": "tc_456", "delta": "{\"orderId\""}
+
+event: tool_call
+data: {"tool": "query_order", "args": {"orderId": "123"}, "id": "tc_456"}
+
+event: token
+data: {"text": "订单"}
+
+event: done
+data: {}
+```
+
+> `/tools/result` 的 SSE 响应格式与 `/stream` 完全一致。LLM 可能再次调用工具(多步工具链),SDK 统一处理。
+
+### 挂起检测与再挂起
+
+后端 `SessionManager` 通过 `withSuspensionDetection()` 统一处理 `stream()` 和 `resume()` 的挂起逻辑:
+
+1. 流结束时扫描最后一条 AI 消息中的 `ToolUseBlock`
+2. 如果存在 → agent 再次挂起,保留在 `suspendedAgents` 池中
+3. 如果不存在 → agent 正常结束,移出挂起池 + saveTo
+
+这意味着一次对话中可能发生多次挂起/恢复循环:
+
+```
+用户消息 → stream → LLM 调工具 A → 挂起
+  → POST /tools/result(A) → resume → LLM 调工具 B → 再次挂起
+    → POST /tools/result(B) → resume → LLM 最终回复 → 正常结束
+```
+
+### 错误响应
+
+| 状态码 | 错误 | 说明 |
+|--------|------|------|
+| 400 | `IllegalArgumentException` | toolUseId 或 result 缺失 |
+| 404 | `NoPendingToolException` | 该 sid 没有挂起的 agent |
+| 409 | `ToolUseIdMismatchException` | toolUseId 与挂起的工具不匹配 |
+
 ---
 
 ### POST /chat/{sid}/abort

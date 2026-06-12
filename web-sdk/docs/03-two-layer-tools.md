@@ -198,6 +198,18 @@ onCall: function(payload) {
 | 不返回值 | SDK 用占位符 `"[Tool executed by client SDK; no result returned]"` |
 | 返回 Promise | 支持异步操作,等 resolve 后提交 |
 
+### 多步工具链
+
+`/tools/result` 返回的 SSE 流与 `/stream` 完全一致,LLM 可能再次调用工具:
+
+```
+用户消息 → stream → LLM 调工具 A → 挂起
+  → SDK 提交 A 结果 → /tools/result → LLM 调工具 B → 再次挂起
+    → SDK 提交 B 结果 → /tools/result → LLM 最终回复
+```
+
+每次 `/tools/result` 的 SSE 流都会触发完整的 thinking、tool_call 等事件,SDK 统一处理。后端通过 `withSuspensionDetection()` 自动检测是否再次挂起。
+
 ### 无 onCall 的工具
 
 如果工具没有 `onCall`,SDK 会弹出用户确认框:

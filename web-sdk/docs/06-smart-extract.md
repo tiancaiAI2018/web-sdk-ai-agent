@@ -107,7 +107,56 @@ document.getElementById('btn-translate').addEventListener('click', () => {
 
 ---
 
-## 场景四:无 onCall 的工具(用户确认模式)
+## 场景四:AI 动态创建皮肤
+
+让 AI 在对话中动态创建新皮肤,再切换到该皮肤:
+
+```js
+// 注册临时工具 create_skin
+await agent.addEphemeralTools([{
+  name: 'create_skin',
+  description: '动态创建新皮肤并注册。创建后需用 change_skin 切换。',
+  parameters: {
+    type: 'object',
+    properties: {
+      name:         { type: 'string', description: '皮肤唯一名' },
+      base:         { type: 'string', enum: ['iridescent-bloom', 'classic'], description: '基于哪个内置皮肤派生' },
+      description:  { type: 'string', description: '风格描述' },
+      primaryColor: { type: 'string', description: '主色调十六进制,如 #0ea5e9' },
+      fontStack:    { type: 'string', enum: ['mixed', 'serif', 'mono', 'system'], description: '字体风格' }
+    },
+    required: ['name', 'base', 'description', 'primaryColor']
+  },
+  onCall: function(payload) {
+    var baseSkin = payload.base === 'classic' ? AIAgent.CLASSIC : AIAgent.IRIDESCENT_BLOOM;
+    var p = payload.primaryColor;
+    var overrideCSS = baseSkin.css + '\n' + [
+      ':host([data-skin="' + payload.name + '"]) {',
+      '  --aia-paint-1: ' + p + ';',
+      '  --aia-glow: ' + p + ';',
+      '}'
+    ].join('\n');
+    var newSkin = AIAgent.deriveSkin(baseSkin, {
+      name: payload.name,
+      css: overrideCSS,
+      layout: payload.fontStack ? { fontStack: payload.fontStack } : {},
+      aiHint: payload.description,
+    });
+    agent.registerSkin(newSkin);
+    return { ok: true, skinName: payload.name, message: '皮肤已创建,请用 change_skin 切换。' };
+  }
+}]);
+```
+
+用户说"帮我创建一个深海蓝绿风格的皮肤"时:
+1. AI 调用 `create_skin` → SDK 用 `deriveSkin` 注册新皮肤
+2. AI 再调用 `change_skin` → 浮窗实时切换到新皮肤
+
+> `create_skin` 是临时工具,新会话自动失效。`change_skin` 是内置持久工具。
+
+---
+
+## 场景五:无 onCall 的工具(用户确认模式)
 
 如果工具没有 `onCall`,SDK 会弹出确认框让用户决定:
 

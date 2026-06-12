@@ -62,6 +62,24 @@ tool_call_end
   → 后续流程同非流式
 ```
 
+### 多步工具链
+
+`/tools/result` 返回的 SSE 流与 `/stream` 完全一致,LLM 可能再次调用工具:
+
+```
+用户发消息 → /stream → LLM 调工具 A
+  → SDK 提交 A 结果 → /tools/result → LLM 调工具 B
+    → SDK 提交 B 结果 → /tools/result → LLM 最终回复
+```
+
+每次 `/tools/result` 的 SSE 流都会触发完整的 thinking、tool_call_start、tool_call_delta、tool_call 事件,SDK 统一处理:
+- 思考卡正常渲染
+- 工具卡正常创建/执行
+- onCall 正常触发
+- 如果再次挂起,后端自动保持 agent 在挂起池中
+
+> 后端通过 `withSuspensionDetection()` 统一检测挂起,`stream()` 和 `resume()` 共用同一逻辑。
+
 ---
 
 ## 载荷类型

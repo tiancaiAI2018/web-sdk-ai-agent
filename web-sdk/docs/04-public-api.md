@@ -34,7 +34,7 @@ agent.setTheme({ theme: 'dark' });
 agent.setSkin('classic');
 ```
 
-可选值: `'iridescent-bloom'` | `'classic'` | 自定义注册名
+可选值: `'iridescent-bloom'` | `'classic'` | `'aurora'` | 自定义注册名
 
 如果传入未注册的皮肤名,会 warn 并忽略。
 
@@ -44,12 +44,26 @@ agent.setSkin('classic');
 agent.registerSkin({
   name: 'aurora',
   css: '...',
-  layout: { cornerGlow: true, statusDotStyle: 'pulse', ... },
+  layout: { cornerGlow: true, fontStack: 'mono' },  // 字段均可选
   aiHint: '极光渐变 + 脉冲动画',
 });
 ```
 
 详细说明见 [05 皮肤系统](05-skin-system.md)。
+
+### listSkins — 查询已注册皮肤名
+
+```js
+const names = agent.listSkins();
+// → ['iridescent-bloom', 'classic', 'aurora', 'ocean']
+```
+
+### listSkinsWithInfo — 查询皮肤名 + AI 描述
+
+```js
+const info = agent.listSkinsWithInfo();
+// → [{ name: 'iridescent-bloom', aiHint: '深色油彩...' }, ...]
+```
 
 ---
 
@@ -210,6 +224,28 @@ AIAgent.registerBuiltinTool(tool);
 ```
 
 预制的 `change_skin` 工具定义,`onCall` 内部调 `agent.setSkin()`。
+
+### AIAgent.deriveSkin — 从已有皮肤派生
+
+```js
+const newSkin = AIAgent.deriveSkin(baseSkin, overrides);
+```
+
+| 参数 | 类型 | 说明 |
+|------|------|------|
+| `baseSkin` | `Skin` | 基皮肤(如 `AIAgent.IRIDESCENT_BLOOM`) |
+| `overrides` | `Partial<Skin>` | 覆盖字段(name 必填) |
+
+返回合并后的新 `Skin` 对象。layout 字段自动合并,只覆盖指定的字段。
+
+### 皮肤常量
+
+| 常量 | 说明 |
+|------|------|
+| `AIAgent.IRIDESCENT_BLOOM` | 内置油彩皮肤 |
+| `AIAgent.CLASSIC` | 内置极简皮肤 |
+| `AIAgent.AURORA` | 内置极光皮肤 |
+| `AIAgent.DEFAULT_LAYOUT` | 默认布局常量 |
 
 ---
 
