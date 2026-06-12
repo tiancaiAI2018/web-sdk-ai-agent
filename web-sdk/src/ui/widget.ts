@@ -145,6 +145,7 @@ export class Widget {
       '  <div class="aiagent-sdk-header-actions">',
       '    <span class="aiagent-sdk-subtitle"></span>',
       demoToolsBtn,
+      '    <button class="aiagent-sdk-iconbtn aiagent-sdk-toggle-thinking" title="显示/隐藏 思考过程" aria-label="思考">🧠</button>',
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-new" title="新会话" aria-label="新会话">＋</button>',
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-close" title="关闭" aria-label="关闭">✕</button>',
       '  </div>',
@@ -178,11 +179,19 @@ export class Widget {
     const closeBtn = panel.querySelector('.aiagent-sdk-close') as HTMLElement;
     const newBtn = panel.querySelector('.aiagent-sdk-new') as HTMLElement;
     const extractBtn = panel.querySelector('.aiagent-sdk-extract') as HTMLElement | null;
+    const thinkingBtn = panel.querySelector('.aiagent-sdk-toggle-thinking') as HTMLElement | null;
 
     closeBtn.addEventListener('click', () => this.handlers.onClose());
     newBtn.addEventListener('click', () => this.handlers.onNew());
     if (extractBtn) {
       extractBtn.addEventListener('click', () => this.handlers.onToggleExtract());
+    }
+    if (thinkingBtn) {
+      thinkingBtn.addEventListener('click', () => {
+        this.panel!.classList.toggle('aiagent-sdk-thinking-hidden');
+        const hidden = this.panel!.classList.contains('aiagent-sdk-thinking-hidden');
+        thinkingBtn.style.opacity = hidden ? '0.4' : '1';
+      });
     }
     this.sendBtn.addEventListener('click', () => {
       this._burstSend();

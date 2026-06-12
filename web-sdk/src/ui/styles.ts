@@ -1121,6 +1121,12 @@ export const WIDGET_CSS = `
 /* ====================================================================
  * 思考卡片 — 模型推理过程(流式,可折叠,完成自动收起)
  * ==================================================================== */
+
+/* 面板级隐藏:头部 🧠 按钮切换 panel 上的 .aiagent-sdk-thinking-hidden */
+.aiagent-sdk-panel.aiagent-sdk-thinking-hidden .aiagent-sdk-thinking-card {
+  display: none;
+}
+
 .aiagent-sdk-thinking-card {
   align-self: stretch;
   background: rgba(0, 0, 0, 0.25);
