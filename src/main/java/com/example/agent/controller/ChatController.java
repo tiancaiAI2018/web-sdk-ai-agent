@@ -183,68 +183,136 @@ public class ChatController {
             return Flux.empty();
         }
 
-        // === ThinkingBlock 优先 — 思考与文本互斥,ThinkingBlock 存在就是思考帧 ===
+        // === 关键修复:遍历 msg 里的所有 block 一起推 ===
+        // last 帧可能同时含 ThinkingBlock + TextBlock + ToolUseBlock(全在一 msg.content 里),
+        // 老逻辑"看到 thinking 就 return"会丢掉 tool_call → SDK onCall 永不触发。
+        // 现在:把每种 block 各自构造一帧,统一进 List 一起返回。
+        java.util.List<ServerSentEvent<String>> frames = new java.util.ArrayList<>();
+
+        // 1) ThinkingBlock → thinking 帧(可能多个,每个都推)
         if (msg != null) {
-            String thinking = extractThinking(msg);
-            if (thinking != null) {
-                // 有 ThinkingBlock 就一定发 thinking 帧(即使内容是空串或空格)
-                ServerSentEvent<String> thinkingEvent = ServerSentEvent.<String>builder()
-                    .event("thinking")
+            try {
+                List<ThinkingBlock> thinkBlocks = msg.getContentBlocks(ThinkingBlock.class);
+                if (thinkBlocks != null) {
+                    for (ThinkingBlock tb : thinkBlocks) {
+                        String t = tb.getThinking();
+                        if (t == null) t = "";
+                        frames.add(ServerSentEvent.<String>builder()
+                            .event("thinking")
+                            .id(isLastForReal ? "last" : null)
+                            .data(t.replace("\n", "\\n").replace("\r", ""))
+                            .build());
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 2) TextBlock → main 帧(有内容才推,避免空字符串干扰前端)
+        String text = msg == null ? null : msg.getTextContent();
+        if (text != null && !text.isEmpty()) {
+            String type = event.getType().name().toLowerCase();
+            ServerSentEvent<String> main = ServerSentEvent.<String>builder()
+                    .event(type)
                     .id(isLastForReal ? "last" : null)
-                    .data(thinking.replace("\n", "\\n").replace("\r", ""))
+                    .data(text.replace("\n", "\\n").replace("\r", ""))
                     .build();
-                return Flux.just(thinkingEvent);
+            frames.add(main);
+        }
+
+
+        // 3) ToolUseBlock → 推 tool_call(中间帧→ delta; last 帧→ 完整)
+        List<ToolUseBlock> toolUses = null;
+        if (msg != null) {
+            try {
+                toolUses = msg.getContentBlocks(ToolUseBlock.class);
+            } catch (Exception ignored) {}
+        }
+        if (toolUses != null && !toolUses.isEmpty()) {
+            // 一次只取第一个(录单场景模型一次只调一个工具)
+            ToolUseBlock tu = toolUses.get(0);
+            String toolId = tu.getId() == null ? "" : tu.getId();
+            String toolName = tu.getName() == null ? "" : tu.getName();
+
+            if (!event.isLast()) {
+                // 中间帧:content 非空就推 tool_call_delta
+                String content = tu.getContent() == null ? "" : tu.getContent();
+                if (!content.isEmpty()) {
+                    String frag = "{\"id\":\"" + toolId + "\",\"name\":\"" + toolName
+                        + "\",\"delta\":\"" + jsonEscape(content) + "\"}";
+                    frames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call_delta")
+                        .data(frag)
+                        .build());
+                }else{
+                    String frag = "{\"id\":\"" + toolId + "\",\"name\":\"" + toolName+ "\"}";
+                    frames.add(ServerSentEvent.<String>builder()
+                            .event("tool_call_start")
+                            .data(frag)
+                            .build());
+                }
+            } else {
+                frames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call_end")
+                        .data(null)
+                        .build());
+                // last 帧:推完整 tool_call(args 三级兜底)
+                String argsJson;
+                if (tu.getInput() != null && !tu.getInput().isEmpty()) {
+                    try { argsJson = mapper.writeValueAsString(tu.getInput()); }
+                    catch (JsonProcessingException e) { argsJson = "{}"; }
+                } else if (tu.getContent() != null && !tu.getContent().isEmpty()) {
+                    String raw = tu.getContent();
+                    try {
+                        Object parsed = mapper.readTree(raw);
+                        argsJson = mapper.writeValueAsString(parsed);
+                    } catch (Exception e) {
+                        argsJson = raw;
+                    }
+                } else {
+                    argsJson = "{}";
+                }
+                String data = "{\"id\":\"" + toolId
+                    + "\",\"tool\":\"" + toolName
+                    + "\",\"args\":" + argsJson + "}";
+                // audit
+                String argsHash = sha256Short(argsJson);
+                try {
+                    audit.logFormSubmit(p.clientId(), p.jti(), sessionId, toolName, argsHash, ip);
+                } catch (Exception ignored) {}
+                // id:last 挂在 tool_call 帧上(纯 tool 场景,main 不存在,tool_call 自带)
+                frames.add(ServerSentEvent.<String>builder()
+                    .event("tool_call")
+                    .id(isLastForReal ? "last" : null)
+                    .data(data)
+                    .build());
             }
         }
+        // 全部推完;没东西就返空
+        if (frames.isEmpty()) return Flux.empty();
+        return Flux.fromIterable(frames);
+    }
 
-        // === 无思考内容 — 走普通 reasoning 帧 ===
-        // msg.getTextContent 只取 TextBlock 文本
-        String text = msg == null || msg.getTextContent() == null ? "" : msg.getTextContent();
-        String type = event.getType().name().toLowerCase();
-        ServerSentEvent<String> main = ServerSentEvent.<String>builder()
-            .event(type)
-            .id(isLastForReal ? "last" : null)
-            // 把 data 内的换行转义成 \\n(字符串),避免 Spring WebFlux 把多行 data
-            // 拆成多个 data: 字段,前端 SSE 解析更简单可靠。前端拿到后用 .replace(/\\n/g, '\n') 还原
-            .data(text == null ? "" : text.replace("\n", "\\n").replace("\r", ""))
-            .build();
-
-        if (msg == null) return Flux.just(main);
-
-        List<ToolUseBlock> toolUses;
-        try {
-            toolUses = msg.getContentBlocks(ToolUseBlock.class);
-        } catch (Exception e) {
-            return Flux.just(main);
+    /**
+     * 把字符串里需要在 JSON 字符串字面量里转义的字符做最小集转义:
+     * {@code \} → {@code \\}、{@code "} → {@code \"}、换行 → {@code \n}。
+     * 专门给 tool_call_delta 的 delta 字段用 —— content 本身是 JSON 片段,
+     * 嵌进 SSE 帧的 data 时要保证不会让前端 JSON.parse 失败。
+     */
+    private static String jsonEscape(String s) {
+        if (s == null) return "";
+        StringBuilder b = new StringBuilder(s.length() + 8);
+        for (int i = 0; i < s.length(); i++) {
+            char c = s.charAt(i);
+            switch (c) {
+                case '\\': b.append("\\\\"); break;
+                case '"':  b.append("\\\""); break;
+                case '\n': b.append("\\n");  break;
+                case '\r': /* 丢掉,避免前端拿到 \r\n */ break;
+                case '\t': b.append("\\t");  break;
+                default:   b.append(c);
+            }
         }
-        if (toolUses == null || toolUses.isEmpty()) return Flux.just(main);
-
-        // 一次只取第一个(录单场景模型一次只调一个工具)
-        ToolUseBlock tu = toolUses.get(0);
-        // 过滤 AgentScope 内部工具(以 __ 开头,流式 JSON 分片用)
-        if (tu.getName() != null && tu.getName().startsWith("__")) {
-            return Flux.just(main);
-        }
-        String argsJson;
-        try {
-            argsJson = mapper.writeValueAsString(tu.getInput());
-        } catch (JsonProcessingException e) {
-            argsJson = "{}";
-        }
-        String data = "{\"id\":\"" + (tu.getId() == null ? "" : tu.getId())
-            + "\",\"tool\":\"" + tu.getName() + "\",\"args\":" + argsJson + "}";
-
-        // audit(只存 hash,不存原文)
-        String argsHash = sha256Short(argsJson);
-        try {
-            audit.logFormSubmit(p.clientId(), p.jti(), sessionId, tu.getName(), argsHash, ip);
-        } catch (Exception ignored) {}
-
-        ServerSentEvent<String> toolCall = ServerSentEvent.<String>builder()
-            .event("tool_call")
-            .data(data)
-            .build();
-        return Flux.just(main, toolCall);
+        return b.toString();
     }
 
     /**
