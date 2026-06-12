@@ -26,7 +26,7 @@
  */
 
 import { AIAgent, createAIAgent } from '../core/agent';
-import { changeSkinTool } from '../core/tools';
+import { changeSkinTool, dictTool } from '../core/tools';
 import {
   IRIDESCENT_BLOOM,
   CLASSIC,
@@ -55,6 +55,7 @@ const factory = createAIAgent();
   factory,
   {
     changeSkinTool,
+    dictTool,
     registerBuiltinTool: AIAgent.registerBuiltinTool,
     // 皮肤系统 — <script> 用户可直接 AIAgent.IRIDESCENT_BLOOM / AIAgent.deriveSkin(...)
     IRIDESCENT_BLOOM,

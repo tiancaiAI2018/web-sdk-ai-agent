@@ -1,0 +1,332 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8" />
+  <title>复杂录单表单 + 字典查询 Demo</title>
+  <style>
+    * { box-sizing: border-box; }
+    body { font-family: -apple-system, "Segoe UI", sans-serif; max-width: 900px; margin: 30px auto; padding: 0 16px; background: #f8fafc; }
+    h1 { color: #1e293b; margin-bottom: 4px; }
+    h1 + p { color: #64748b; font-size: 14px; margin-top: 0; }
+    .card { background: #fff; border-radius: 12px; box-shadow: 0 1px 3px rgba(0,0,0,.08); padding: 24px; margin: 16px 0; }
+    .form-grid { display: grid; grid-template-columns: 110px 1fr; gap: 12px 16px; align-items: center; }
+    .form-grid label { font-size: 13px; color: #475569; font-weight: 500; text-align: right; }
+    .form-grid input, .form-grid select { border: 1px solid #e2e8f0; border-radius: 6px; padding: 8px 12px; font: inherit; font-size: 14px; transition: border-color .2s, background .4s; width: 100%; }
+    .form-grid input:focus, .form-grid select:focus { outline: none; border-color: #3b82f6; box-shadow: 0 0 0 3px rgba(59,130,246,.15); }
+    .filled { background: #dcfce7 !important; border-color: #86efac !important; }
+    .section-title { font-size: 15px; font-weight: 600; color: #334155; margin: 20px 0 12px; padding-bottom: 6px; border-bottom: 2px solid #e2e8f0; }
+    .section-title:first-child { margin-top: 0; }
+    .demo-section { margin: 16px 0; padding: 12px 16px; border-left: 4px solid #3b82f6; background: #eff6ff; border-radius: 4px; }
+    .demo-section h3 { margin: 0 0 8px; color: #1d4ed8; font-size: 14px; }
+    .demo-section p { margin: 4px 0; font-size: 13px; color: #475569; }
+    .demo-section button { margin: 4px 4px 4px 0; padding: 6px 14px; border: 1px solid #93c5fd; border-radius: 4px; background: #fff; cursor: pointer; font: inherit; font-size: 13px; }
+    .demo-section button:hover { background: #dbeafe; }
+    .demo-section button.active { background: #3b82f6; color: #fff; border-color: #3b82f6; }
+    .log-area { margin-top: 8px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; max-height: 150px; overflow-y: auto; font-size: 12px; color: #64748b; font-family: monospace; white-space: pre-wrap; }
+    .badge { display: inline-block; padding: 2px 8px; border-radius: 10px; font-size: 11px; font-weight: 600; }
+    .badge-dict { background: #dbeafe; color: #1d4ed8; }
+    .badge-form { background: #dcfce7; color: #166534; }
+    .dict-select { appearance: none; background: #fff url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 12 12'%3E%3Cpath d='M2 4l4 4 4-4' fill='none' stroke='%2394a3b8' stroke-width='1.5'/%3E%3C/svg%3E") no-repeat right 10px center; padding-right: 28px; cursor: pointer; }
+    .code-tag { font-size: 11px; color: #94a3b8; font-family: monospace; }
+    .dict-row { display: flex; gap: 8px; align-items: center; }
+    .dict-row select { flex: 1; }
+    .dict-row .code-tag { min-width: 50px; text-align: center; }
+  </style>
+</head>
+<body>
+  <h1>复杂录单表单 + 字典查询</h1>
+  <p>演示 AI 通过 <span class="badge badge-dict">query_dict</span> 查字典编码 → <span class="badge badge-form">submit_order</span> 提交表单的完整流程</p>
+
+  <div class="card">
+    <div class="section-title">客户信息</div>
+    <div class="form-grid">
+      <label>客户名称</label> <input id="f-customerName"  data-field="customerName" placeholder="自动填充" />
+      <label>联系电话</label> <input id="f-customerPhone" data-field="customerPhone" placeholder="11位手机号" />
+      <label>收货城市</label>
+      <div class="dict-row">
+        <select id="f-cityCode" data-field="cityCode" data-dict="city" class="dict-select">
+          <option value="">-- 请选择城市 --</option>
+        </select>
+        <span id="f-cityCode-tag" class="code-tag"></span>
+      </div>
+    </div>
+
+    <div class="section-title">商品信息</div>
+    <div class="form-grid">
+      <label>商品分类</label>
+      <div class="dict-row">
+        <select id="f-categoryCode" data-field="categoryCode" data-dict="category" class="dict-select">
+          <option value="">-- 请选择分类 --</option>
+        </select>
+        <span id="f-categoryCode-tag" class="code-tag"></span>
+      </div>
+      <label>商品名称</label>
+      <div class="dict-row">
+        <select id="f-productCode" data-field="productCode" data-dict="product" class="dict-select">
+          <option value="">-- 请选择商品 --</option>
+        </select>
+        <span id="f-productCode-tag" class="code-tag"></span>
+      </div>
+      <label>数量</label>     <input id="f-quantity"     data-field="quantity" type="number" placeholder="数字" />
+      <label>单价(元)</label> <input id="f-unitPrice"    data-field="unitPrice" type="number" step="0.01" placeholder="0.00" />
+    </div>
+
+    <div class="section-title">物流与付款</div>
+    <div class="form-grid">
+      <label>发货仓库</label>
+      <div class="dict-row">
+        <select id="f-warehouseCode" data-field="warehouseCode" data-dict="warehouse" class="dict-select">
+          <option value="">-- 请选择仓库 --</option>
+        </select>
+        <span id="f-warehouseCode-tag" class="code-tag"></span>
+      </div>
+      <label>紧急程度</label>
+      <div class="dict-row">
+        <select id="f-urgencyCode" data-field="urgencyCode" data-dict="urgency" class="dict-select">
+          <option value="">-- 请选择紧急程度 --</option>
+        </select>
+        <span id="f-urgencyCode-tag" class="code-tag"></span>
+      </div>
+      <label>付款方式</label>
+      <div class="dict-row">
+        <select id="f-paymentCode" data-field="paymentCode" data-dict="payment" class="dict-select">
+          <option value="">-- 请选择付款方式 --</option>
+        </select>
+        <span id="f-paymentCode-tag" class="code-tag"></span>
+      </div>
+      <label>备注</label> <input id="f-notes" data-field="notes" placeholder="其他备注" />
+    </div>
+  </div>
+
+  <!-- 操作区 -->
+  <div class="demo-section">
+    <h3>操作面板</h3>
+    <p>点击"注入字典工具"后,AI 就能通过 query_dict 查询编码。跟 AI 说"帮我录一单"即可体验。</p>
+    <button id="btn-inject-dict">注入字典工具(query_dict)</button>
+    <button id="btn-remove-dict">移除字典工具</button>
+    <button id="btn-clear-form">清空表单</button>
+    <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;font-size:13px;">字典工具: 未注入 | 持久工具: submit_order</p>
+    <div id="log-area" class="log-area">等待操作...</div>
+  </div>
+
+  <script src="http://localhost:8080/sdk/ai-agent-sdk.js"></script>
+  <script>
+    var logEl = document.getElementById('log-area');
+    function log(msg) {
+      var t = new Date().toLocaleTimeString();
+      logEl.textContent = '[' + t + '] ' + msg + '\n' + logEl.textContent;
+    }
+
+    // ===== 编码→名称 映射表(本地缓存) =====
+    var dictCache = {
+      city: {}, product: {}, warehouse: {}, category: {}, urgency: {}, payment: {}
+    };
+
+    // ===== 页面加载时,从后端拉字典数据填充下拉框 =====
+    var DICT_TYPES = ['city', 'product', 'warehouse', 'category', 'urgency', 'payment'];
+    var DICT_LABELS = {
+      city: '城市', product: '商品', warehouse: '仓库',
+      category: '分类', urgency: '紧急程度', payment: '付款方式'
+    };
+
+    DICT_TYPES.forEach(function (dictType) {
+      fetch('http://localhost:8080/dict/' + dictType + '/list')
+        .then(function (r) { return r.json(); })
+        .then(function (data) {
+          var items = data.body || data; // 兼容 ResponseEntity 包装
+          var sel = document.querySelector('select[data-dict="' + dictType + '"]');
+          if (!sel) return;
+
+          items.forEach(function (item) {
+            var opt = document.createElement('option');
+            opt.value = item.code;
+            opt.textContent = item.name;
+            sel.appendChild(opt);
+            // 同步缓存
+            dictCache[dictType][item.code] = item.name;
+          });
+
+          log('字典 ' + dictType + ' 加载完成: ' + items.length + ' 条');
+        })
+        .catch(function (e) {
+          log('字典 ' + dictType + ' 加载失败: ' + e.message);
+        });
+    });
+
+    // 下拉框选中时,右侧显示编码;同时高亮标记
+    document.querySelectorAll('select[data-dict]').forEach(function (sel) {
+      sel.addEventListener('change', function () {
+        var tagEl = document.getElementById(sel.id + '-tag');
+        if (tagEl) tagEl.textContent = sel.value || '';
+        if (sel.value) {
+          sel.classList.add('filled');
+        } else {
+          sel.classList.remove('filled');
+        }
+      });
+    });
+
+    // ===== 编程方式选中下拉框(供 AI 回填用) =====
+    function selectOption(selectId, code) {
+      var sel = document.getElementById(selectId);
+      if (!sel) return;
+      sel.value = code;
+      // 触发 change 事件,更新编码标签和高亮
+      sel.dispatchEvent(new Event('change'));
+      sel.classList.add('filled');
+      setTimeout(function () { sel.classList.remove('filled'); }, 2000);
+    }
+
+    // ===== 1. SDK 初始化 =====
+    var agent = AIAgent.init({
+      endpoint: 'http://localhost:8080',
+      getAccessToken: async function () {
+        var r = await fetch('http://localhost:7000/api/ai-token', { method: 'POST' });
+        if (!r.ok) throw new Error('换 token 失败: ' + r.status);
+        return await r.json();
+      },
+      title: '录单助手',
+      subtitle: '智能录单 + 字典查询',
+      welcomeMessage: '你好!我是录单助手。你可以直接告诉我订单信息,我会自动查字典编码并填入表单。\n\n示例:"帮我录一单,客户张三,电话13800138000,在北京,要5台华为Mate60,发到北京中心仓,加急,银行转账"',
+      placeholder: '输入订单信息,如"客户张三,在北京,要5台华为Mate60"',
+      theme: 'light',
+      position: 'bottom-right',
+      clientPrefix: 'demo-app',
+      builtinTools: { changeSkin: false },
+      // 持久工具:submit_order
+      persistentTools: [{
+        name: 'submit_order',
+        description:
+          '提交订单表单。所有编码字段必须通过 query_dict 工具查询获得,不要猜测编码。\n' +
+          '必填字段:customerName, customerPhone, cityCode, categoryCode, productCode, quantity, unitPrice, warehouseCode, paymentCode。\n' +
+          '可选字段:urgencyCode, notes。',
+        parameters: {
+          type: 'object',
+          properties: {
+            customerName:  { type: 'string', description: '客户名称' },
+            customerPhone: { type: 'string', description: '11位手机号' },
+            cityCode:      { type: 'string', description: '城市编码(通过 query_dict 查询 dictType=city)' },
+            categoryCode:  { type: 'string', description: '商品分类编码(通过 query_dict 查询 dictType=category)' },
+            productCode:   { type: 'string', description: '商品编码(通过 query_dict 查询 dictType=product)' },
+            quantity:      { type: 'number', description: '数量' },
+            unitPrice:     { type: 'number', description: '单价(元)' },
+            warehouseCode: { type: 'string', description: '仓库编码(通过 query_dict 查询 dictType=warehouse)' },
+            urgencyCode:   { type: 'string', description: '紧急程度编码(通过 query_dict 查询 dictType=urgency)' },
+            paymentCode:   { type: 'string', description: '付款方式编码(通过 query_dict 查询 dictType=payment)' },
+            notes:         { type: 'string', description: '备注' }
+          },
+          required: ['customerName', 'customerPhone', 'cityCode', 'categoryCode', 'productCode', 'quantity', 'unitPrice', 'warehouseCode', 'paymentCode']
+        },
+        strict: true,
+        onCall: function (payload) {
+          // 回填普通文本字段
+          ['customerName', 'customerPhone', 'quantity', 'unitPrice', 'notes'].forEach(function (k) {
+            if (payload[k] == null) return;
+            var el = document.querySelector('[data-field="' + k + '"]');
+            if (el) {
+              el.value = payload[k];
+              el.classList.add('filled');
+              setTimeout(function () { el.classList.remove('filled'); }, 2000);
+            }
+          });
+
+          // 回填下拉框字段(编码→选中对应选项)
+          selectOption('f-cityCode', payload.cityCode);
+          selectOption('f-categoryCode', payload.categoryCode);
+          selectOption('f-productCode', payload.productCode);
+          selectOption('f-warehouseCode', payload.warehouseCode);
+          selectOption('f-urgencyCode', payload.urgencyCode);
+          selectOption('f-paymentCode', payload.paymentCode);
+
+          log('订单已提交: ' + JSON.stringify(payload, null, 2));
+          return '订单提交成功! 客户: ' + payload.customerName +
+            ', 城市: ' + (dictCache.city[payload.cityCode] || payload.cityCode) +
+            ', 商品: ' + (dictCache.product[payload.productCode] || payload.productCode) +
+            ', 数量: ' + payload.quantity +
+            ', 金额: ' + (payload.quantity * payload.unitPrice) + '元';
+        }
+      }]
+    });
+
+    // ===== 2. 字典工具(临时,当前会话生效) =====
+    var dictInjected = false;
+
+    document.getElementById('btn-inject-dict').addEventListener('click', function () {
+      if (dictInjected) {
+        log('字典工具已注入,跳过');
+        return;
+      }
+
+      var queryDictTool = AIAgent.dictTool({
+        endpoint: 'http://localhost:8080',
+        dictTypes: ['city', 'product', 'warehouse', 'category', 'urgency', 'payment'],
+        dictTypeLabels: {
+          city:      '城市(如北京、上海)',
+          product:   '商品/产品(如华为Mate60、iPhone15)',
+          warehouse: '仓库(如北京中心仓、上海浦东仓)',
+          category:  '商品分类(如手机通讯、电脑办公)',
+          urgency:   '紧急程度(普通/加急/特急)',
+          payment:   '付款方式(银行转账/微信/支付宝等)'
+        }
+      });
+
+      // 包装 onCall:缓存编码→名称映射
+      var originalOnCall = queryDictTool.onCall;
+      queryDictTool.onCall = function (args) {
+        return Promise.resolve(originalOnCall(args)).then(function (result) {
+          if (result && result.ok && result.items) {
+            result.items.forEach(function (item) {
+              dictCache[args.dictType] = dictCache[args.dictType] || {};
+              dictCache[args.dictType][item.code] = item.name;
+            });
+            log('缓存字典: ' + args.dictType + ' → ' + result.items.length + '条');
+          }
+          return result;
+        });
+      };
+
+      agent.addEphemeralTools([queryDictTool]);
+      dictInjected = true;
+      updateStatus();
+      log('已注入字典工具 query_dict(6种字典类型,临时工具)');
+    });
+
+    document.getElementById('btn-remove-dict').addEventListener('click', function () {
+      if (!dictInjected) {
+        log('字典工具未注入,跳过');
+        return;
+      }
+      agent.removeEphemeralTools(['query_dict']);
+      dictInjected = false;
+      updateStatus();
+      log('已移除字典工具 query_dict');
+    });
+
+    document.getElementById('btn-clear-form').addEventListener('click', function () {
+      // 清空文本框
+      document.querySelectorAll('input[data-field]').forEach(function (el) {
+        el.value = '';
+        el.classList.remove('filled');
+      });
+      // 重置下拉框
+      document.querySelectorAll('select[data-dict]').forEach(function (sel) {
+        sel.selectedIndex = 0;
+        sel.classList.remove('filled');
+        var tagEl = document.getElementById(sel.id + '-tag');
+        if (tagEl) tagEl.textContent = '';
+      });
+      log('表单已清空');
+    });
+
+    function updateStatus() {
+      var el = document.getElementById('status-line');
+      el.textContent = '字典工具: ' + (dictInjected ? '已注入(query_dict)' : '未注入') +
+        ' | 持久工具: submit_order';
+    }
+
+    // ===== 3. 自动打开浮窗 =====
+    agent.open();
+    log('SDK 初始化完成,浮窗已打开');
+  </script>
+</body>
+</html>

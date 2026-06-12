@@ -242,6 +242,170 @@ export async function postAbort(
  *   name + aiHint 拼成 markdown 列表。LLM 看到的是"具体有哪些皮肤,每个什么风格",
  *   而不是模糊的"由 SDK 注册表决定"。
  */
+
+// ====================================================================
+// dictTool 工厂 —— 字典查询工具,供 AI 将中文名转为系统编码
+// ====================================================================
+
+/**
+ * 字典查询工具的配置项。
+ */
+export interface DictToolOptions {
+  /** 后端 base URL,不带尾斜杠。不传则用 agent 的 endpoint */
+  endpoint?: string;
+  /**
+   * 可用的字典类型列表。
+   * 会写入 tool description,让 AI 知道该传什么 dictType。
+   * 示例: ['city', 'product', 'warehouse', 'category']
+   */
+  dictTypes: string[];
+  /** 每种字典类型的中文描述,用于 tool description */
+  dictTypeLabels?: Record<string, string>;
+}
+
+/**
+ * 字典查询工具工厂 —— 返回一个 query_dict ToolDef。
+ *
+ * <p>用法:
+ * <pre>
+ *   agent.addEphemeralTools([
+ *     dictTool({ dictTypes: ['city', 'product', 'warehouse'] })
+ *   ])
+ * </pre>
+ *
+ * <p>AI 调用流程:
+ * <ol>
+ *   <li>用户说"客户在北京,要华为Mate60"</li>
+ *   <li>AI 调 query_dict({dictType:"city", keyword:"北京"}) → 拿到编码 "0001"</li>
+ *   <li>AI 调 query_dict({dictType:"product", keyword:"华为Mate60"}) → 拿到编码 "P004"</li>
+ *   <li>AI 调 submit_form({cityCode:"0001", productCode:"P004", ...})</li>
+ * </ol>
+ *
+ * <p>onCall 逻辑:调后端 GET /dict/{dictType}/query?keyword=xxx&limit=5,
+ * 返回格式化的编码列表给 AI 判断。
+ */
+export function dictTool(opts: DictToolOptions): ToolDef {
+  const types = opts.dictTypes || [];
+  const labels = opts.dictTypeLabels || {};
+
+  // 拼接字典类型描述
+  const typeDesc = types
+    .map((t) => {
+      const label = labels[t] || t;
+      return `  - \`${t}\`: ${label}`;
+    })
+    .join('\n');
+
+  return {
+    name: 'query_dict',
+    description:
+      `查询字典数据,将中文名转换为系统编码。\n` +
+      `在调用 submit_form 等需要编码的接口前,先用本工具查询对应编码。\n` +
+      `可用字典类型:\n${typeDesc}\n` +
+      `返回结果包含 matchType(匹配方式)和 score(置信度):\n` +
+      `  - exact: 精确匹配(100%确定)\n` +
+      `  - contains/suffix_stripped: 近似匹配(大概率对,可确认)\n` +
+      `  - bigram/edit_distance: 模糊匹配(需跟用户确认)`,
+    parameters: {
+      type: 'object',
+      properties: {
+        dictType: {
+          type: 'string',
+          enum: types,
+          description: '字典类型',
+        },
+        keyword: {
+          type: 'string',
+          description: '搜索关键词,如城市名"北京"、产品名"华为"',
+        },
+        limit: {
+          type: 'number',
+          description: '返回条数上限,默认5',
+        },
+      },
+      required: ['dictType', 'keyword'],
+    },
+    strict: false,
+    onCall: async (args) => {
+      const dictType = (args as { dictType?: string }).dictType || '';
+      const keyword = (args as { keyword?: string }).keyword || '';
+      const limit = (args as { limit?: number }).limit || 5;
+
+      if (!dictType || !keyword) {
+        return { ok: false, error: 'dictType and keyword are required' };
+      }
+
+      // 确定请求地址
+      const baseUrl = opts.endpoint || '';
+      const url =
+        baseUrl +
+        '/dict/' +
+        encodeURIComponent(dictType) +
+        '/query?keyword=' +
+        encodeURIComponent(keyword) +
+        '&limit=' +
+        limit;
+
+      try {
+        const resp = await fetch(url, {
+          headers: { Accept: 'application/json' },
+        });
+        if (!resp.ok) {
+          return {
+            ok: false,
+            error: 'HTTP ' + resp.status,
+            message: '字典查询失败',
+          };
+        }
+        const items = (await resp.json()) as Array<{
+          code: string;
+          name: string;
+          matchType: string;
+          score: number;
+        }>;
+
+        if (!items || items.length === 0) {
+          return {
+            ok: true,
+            items: [],
+            message:
+              '未找到匹配项。请尝试:更换关键词、使用全称或简称、检查字典类型是否正确。',
+          };
+        }
+
+        // 格式化返回给 AI:编码 → 名称 [匹配方式]
+        const formatted = items
+          .map((i) => {
+            let tag = '';
+            if (i.matchType === 'exact' || i.score >= 0.9) tag = '[精确]';
+            else if (
+              i.matchType === 'contains' ||
+              i.matchType === 'suffix_stripped' ||
+              i.matchType === 'alias'
+            )
+              tag = '[近似]';
+            else tag = '[模糊,请确认]';
+            return `${i.code} → ${i.name} ${tag}`;
+          })
+          .join('\n');
+
+        return {
+          ok: true,
+          items: items.map((i) => ({ code: i.code, name: i.name, matchType: i.matchType, score: i.score })),
+          formatted,
+          message: formatted,
+        };
+      } catch (e) {
+        return {
+          ok: false,
+          error: (e as Error).message,
+          message: '字典查询异常',
+        };
+      }
+    },
+  };
+}
+
 export function changeSkinTool(agent: {
   setSkin: (name: string) => void;
   registerSkin?: (skin: unknown) => void;

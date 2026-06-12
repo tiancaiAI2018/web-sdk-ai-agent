@@ -45,7 +45,8 @@ public class JwtAuthFilter implements WebFilter {
         "/webjars",
         "/sdk/",
         "/examples/",
-        "/favicon.ico"
+        "/favicon.ico",
+        "/dict/"          // 字典查询接口,AI 工具 onCall 从浏览器直接调用(无 JWT)
     };
 
     private static final String CHAT_PREFIX = "/chat/";

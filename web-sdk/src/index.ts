@@ -26,7 +26,9 @@ export {
   renderToolResultFailedCard,
   resumePendingToolResults,
   changeSkinTool,
+  dictTool,
   type ToolCtx,
+  type DictToolOptions,
 } from './core/tools';
 export { Widget } from './ui/widget';
 export { applyTheme, DEFAULT_THEME } from './ui/theme';
