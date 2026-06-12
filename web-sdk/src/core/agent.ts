@@ -64,6 +64,11 @@ import {
   createThinkingCard,
   setThinkingContent,
   finalizeThinking,
+  appendToolCard,
+  appendToolCallDelta,
+  updateToolCallDelta,
+  promoteToConfirmedToolCall,
+  addConfirmActions,
 } from '../ui/components/tool-card';
 import type {
   AIAgentOptions,
@@ -77,6 +82,9 @@ import type {
   StartExtractOptions,
   ToolDef,
   ToolCallPayload,
+  ToolCallDeltaPayload,
+  ToolCallStartPayload,
+  ToolCallEndPayload,
   MessageRole,
 } from './types';
 
@@ -140,6 +148,12 @@ export class AIAgent {
   _lastToolCard: HTMLElement | null = null;
   /** 当前流式思考卡片的根元素(供 onThinking 追加用) */
   _thinkingCard: HTMLElement | null = null;
+  /**
+   * tool_call_delta 累积中的占位卡:toolUseId → 卡片 DOM。
+   * 完整 tool_call last 帧来时,从这里取卡 promote 成完整卡。
+   * 一个 stream 内多个 tool 并发时才会有 >1 项;正常录单场景 1 项。
+   */
+  _pendingDelta: Map<string, HTMLElement> = new Map();
 
   // ====================================================================
   // 公共入口
@@ -291,6 +305,9 @@ export class AIAgent {
       onDone: o.onDone || (() => {}),
       onError: o.onError || ((e) => console.error(e)),
       onToolCall: o.onToolCall,
+      onToolCallDelta: o.onToolCallDelta,
+      onToolCallStart: o.onToolCallStart,
+      onToolCallEnd: o.onToolCallEnd,
     });
   }
 
@@ -335,6 +352,7 @@ export class AIAgent {
     this._extractOnCall = null;
     this._chatSessionId = null;
     this._thinkingCard = null;
+    this._pendingDelta.clear();
     // 新会话:重新显示 welcome 区(如果是新会话)
     if (this._widget && this._opts.welcomeMessage) {
       this._widget.setWelcome(this._opts.welcomeMessage);
@@ -398,6 +416,9 @@ export class AIAgent {
       onError: (e: Error) => void;
       onThinking: (text: string) => void;
       onToolCall: (parsed: ToolCallPayload) => Promise<void>;
+      onToolCallDelta: (parsed: ToolCallDeltaPayload) => void;
+      onToolCallStart: (parsed: ToolCallStartPayload) => void;
+      onToolCallEnd: (parsed: ToolCallEndPayload) => void;
     } = {
       message: text,
       onChunk: (ev: SSEEvent) => {
@@ -458,53 +479,123 @@ export class AIAgent {
           setThinkingContent(self._thinkingCard, thinkingBuf);
         }
       },
-      onToolCall: async (parsed: ToolCallPayload) => {
-        if (!parsed || !parsed.tool) return;
-        // 过滤掉 AgentScope 内部的工具(框架用 __fragment__ 推流式分片)
-        if (parsed.tool.indexOf('__') === 0) return;
-        // 必须有非空 args 才是"完整可执行"调用
-        if (!parsed.args || typeof parsed.args !== 'object') return;
-        const keys = Object.keys(parsed.args);
-        if (!keys.length) return;
-        if (submitted) return; // 一个 stream 内只处理第一次"完整"调用
-        submitted = true;
-        // 添加工具调用卡片(油彩终端);保存引用供后续更新进度
-        self._appendMsg('tool', '', { tool: parsed.tool, args: parsed.args });
-        // 找到刚加的卡片(最新一张 .aiagent-sdk-tool-card)
-        const cards = refs.msgEl.querySelectorAll('.aiagent-sdk-tool-card');
-        self._lastToolCard = cards.length ? (cards[cards.length - 1] as HTMLElement) : null;
-        if (self._lastToolCard) {
-          updateToolCardProgress(self._lastToolCard, 30, '执行中…');
+      onToolCallStart: (parsed: ToolCallStartPayload) => {
+        console.log('[AIAgent SDK 🚀 onToolCallStart]', parsed);
+        if (!parsed || !parsed.id || !parsed.name) {
+          console.log('[AIAgent SDK ❌ onToolCallStart] 早 return:id 或 name 为空');
+          return;
         }
-        // 调本地 onCall 拿 result
-        let toolResult: unknown;
-        const localTool = self._getLocalTool(
-          self._chatSessionId!,
-          parsed.tool
-        );
-        if (localTool && localTool.onCall) {
+        // 后端声明帧:用真实 tool 名建占位卡
+        const card = appendToolCallDelta(refs.msgEl, parsed.id, parsed.name);
+        self._pendingDelta.set(parsed.id, card);
+      },
+      onToolCallDelta: (parsed: ToolCallDeltaPayload) => {
+        console.log('[AIAgent SDK 🔧 onToolCallDelta]', parsed);
+        if (!parsed || !parsed.id) {
+          console.log('[AIAgent SDK ❌ onToolCallDelta] 早 return:id 为空');
+          return;
+        }
+        // 同一个 toolid 累计到同一张占位卡。
+        // 兼容:后端没推 tool_call_start 直接推 delta,这里补建占位卡。
+        let card = self._pendingDelta.get(parsed.id);
+        if (!card) {
+          card = appendToolCallDelta(refs.msgEl, parsed.id, parsed.name || '...');
+          self._pendingDelta.set(parsed.id, card);
+        }
+        updateToolCallDelta(card, parsed.delta || '');
+      },
+      onToolCallEnd: (_parsed: ToolCallEndPayload) => {
+        console.log('[AIAgent SDK 🏁 onToolCallEnd] 流式结束');
+        // 暂不需要 UI 行为,留 hook 备扩展
+      },
+      onToolCall: async (parsed: ToolCallPayload) => {
+        console.log('[AIAgent SDK 🎯 onToolCall 入口] parsed=', parsed,
+          'sessionId=', self._chatSessionId, 'submitted=', submitted);
+        // 立刻锁 busy —— 防止 onDone 已触发 setBusy(false) 后用户发新消息撞 409。
+        // (流末尾 id:last 帧可能在 onCall 之前触发 fireDone,见 sse.ts 路由顺序注释)
+        self._setBusy(true);
+        if (!parsed || !parsed.tool) {
+          console.log('[AIAgent SDK ❌ onToolCall] 早 return:parsed 或 tool 为空');
+          return;
+        }
+        // 完整 tool_use 帧(后端 last 帧必带完整 name + args,不需要前端累积)
+        if (parsed.tool.indexOf('__') === 0) {
+          console.log('[AIAgent SDK ❌ onToolCall] 早 return:tool 名字 __ 开头');
+          return;
+        }
+        if (!parsed.args || typeof parsed.args !== 'object') {
+          console.log('[AIAgent SDK ❌ onToolCall] 早 return:args 不是对象', typeof parsed.args);
+          return;
+        }
+        if (Object.keys(parsed.args).length === 0) {
+          console.log('[AIAgent SDK ❌ onToolCall] 早 return:args 是空对象(后端 last 帧没推完整?)');
+          return;
+        }
+        if (submitted) {
+          console.log('[AIAgent SDK ❌ onToolCall] 早 return:本 stream 已 submitted');
+          return;
+        }
+        submitted = true;
+
+        // 1) 把占位卡 promote 成完整卡(用 _pendingDelta 里的同 id 卡;
+        //    没经过 delta 阶段直接 last 帧 → fallback 新建一张)
+        const existing = parsed.id ? self._pendingDelta.get(parsed.id) : null;
+        const card: HTMLElement = existing
+          ? (promoteToConfirmedToolCall(existing, parsed.args, parsed.tool),
+            self._pendingDelta.delete(parsed.id!), existing)
+          : (() => {
+              const fb = appendToolCard(refs.msgEl, parsed.tool, parsed.args);
+              promoteToConfirmedToolCall(fb, parsed.args, parsed.tool);
+              return fb;
+            })();
+        self._lastToolCard = card;
+        // ⚠️ 不再调 self._appendMsg('tool', ...) —— 那会走 createMessageEl + appendToolCard
+        // 重建一张卡塞到 msgEl,跟 _pendingDelta 里 promote 出的卡重复(用户截图红框椭圆)。
+        // 改成只 push 到内部 _messages 列表(对外 API 字段)就够了。
+        self._messages.push({ role: 'tool', text: '', data: { tool: parsed.tool, args: parsed.args } });
+
+        // 2) 决策:SDK 有 onCall → 直接执行;无 onCall → 弹确认框
+        const localTool = self._getLocalTool(self._chatSessionId!, parsed.tool);
+        const hasOnCall = !!(localTool && localTool.onCall);
+        console.log('[AIAgent SDK 🔍 onToolCall 决策]',
+          'sid=', self._chatSessionId, 'tool=', parsed.tool,
+          'localTool=', !!localTool, 'hasOnCall=', hasOnCall,
+          'onCallSnapshot=', !!onCallSnapshot);
+        if (!hasOnCall) {
+          // 没有可执行体 → 必须用户确认(addConfirmActions 内部已把 status 设"✓ 已确认"或"✕ 已取消")
+          const ok = await addConfirmActions(card);
+          console.log('[AIAgent SDK 🛡 addConfirmActions 结果]', ok);
+          if (!ok) {
+            self._appendMsg('system', `🚫 已取消工具调用:${parsed.tool}`);
+            await self._postAbort();
+            return;
+          }
+        }
+
+        // 3) 执行 / 喂结果
+        let toolResult: unknown = hasOnCall ? undefined : { confirmed: true };
+        if (hasOnCall) {
           try {
-            toolResult = await Promise.resolve(localTool.onCall(parsed.args));
+            console.log('[AIAgent SDK ⚡ 调用 onCall]', parsed.tool, 'args=', parsed.args);
+            toolResult = await Promise.resolve(localTool!.onCall!(parsed.args));
+            console.log('[AIAgent SDK ⚡ onCall 返回]', toolResult);
           } catch (e) {
             console.error('[AIAgent SDK] onCall threw:', e);
             self._appendMsg('system', '⚠️ onCall 失败: ' + (e as Error).message);
           }
-        }
-        // 浮窗录单模式下,onCallSnapshot 是 startExtractSession 时传进来的 onFormSubmit
-        if (onCallSnapshot && parsed.tool === 'submit_form') {
-          try {
-            const r = onCallSnapshot(parsed.args);
-            if (r != null && toolResult == null) toolResult = r;
-          } catch (e) {
-            console.error('[AIAgent SDK] extract onCall threw:', e);
+          // 浮窗录单模式下,onCallSnapshot 是 startExtractSession 时传进来的 onFormSubmit
+          if (onCallSnapshot && parsed.tool === 'submit_form') {
+            try {
+              const r = onCallSnapshot(parsed.args);
+              if (r != null && toolResult == null) toolResult = r;
+            } catch (e) {
+              console.error('[AIAgent SDK] extract onCall threw:', e);
+            }
           }
         }
-        if (self._lastToolCard) {
-          updateToolCardProgress(self._lastToolCard, 60, '提交结果…');
-        }
-        // 把 result 回传后端,触发 LLM 看到结果后继续(官方 TOOL 恢复模式)
         if (parsed.id) {
-          await self._postToolResult(parsed.id, toolResult, self._lastToolCard);
+          console.log('[AIAgent SDK 📤 POST /tools/result]', parsed.id, 'result=', toolResult);
+          await self._postToolResult(parsed.id, toolResult, card);
         }
       },
     };
@@ -572,6 +663,9 @@ export class AIAgent {
     onDone?: () => void;
     onError?: (e: Error) => void;
     onToolCall?: (parsed: ToolCallPayload) => void;
+    onToolCallDelta?: (parsed: ToolCallDeltaPayload) => void;
+    onToolCallStart?: (parsed: ToolCallStartPayload) => void;
+    onToolCallEnd?: (parsed: ToolCallEndPayload) => void;
     onThinking?: (text: string) => void;
   }): Promise<void> {
     const sessionId = opts.sessionId;
@@ -581,6 +675,9 @@ export class AIAgent {
     const onDone = opts.onDone || (() => {});
     const onError = opts.onError || ((e: Error) => console.error(e));
     const onToolCall = opts.onToolCall;
+    const onToolCallDelta = opts.onToolCallDelta;
+    const onToolCallStart = opts.onToolCallStart;
+    const onToolCallEnd = opts.onToolCallEnd;
     const onThinking = opts.onThinking;
 
     if (!sessionId) {
@@ -624,7 +721,10 @@ export class AIAgent {
       onError(new Error('http ' + r.status));
       return;
     }
-    return consumeSseStream(r.body, onChunk, onDone, onError, onToolCall, onThinking);
+    return consumeSseStream(
+      r.body, onChunk, onDone, onError,
+      onToolCall, onToolCallDelta, onToolCallStart, onToolCallEnd, onThinking
+    );
   }
 
   // ====================================================================
@@ -639,6 +739,21 @@ export class AIAgent {
   ): Promise<void> {
     const ctx = this._toolCtx();
     return postToolResult(ctx, toolUseId, result, card);
+  }
+
+  /**
+   * 用户取消工具确认 → 调后端 /tools/abort 释放挂起的 agent。
+   * 必须先 setBusy(false),否则用户会以为应用卡死。
+   */
+  async _postAbort(): Promise<void> {
+    const sid = this._chatSessionId;
+    if (!sid) return;
+    try {
+      await postAbort(this.endpoint, await this._ensureToken(), sid);
+    } catch (e) {
+      console.warn('[AIAgent SDK] abort failed:', (e as Error).message);
+    }
+    this._setBusy(false);
   }
 
   /** 启动时续传 — 委托 tools.ts */

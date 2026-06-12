@@ -68,15 +68,14 @@ export function appendToolCard(
   return card;
 }
 
-/** 更新工具卡进度条 (percent: 0-100) + 状态文字 */
+/** 更新工具卡状态文字(percent 参数在新结构下不再用,保留兼容) */
 export function updateToolCardProgress(
   card: HTMLElement,
-  percent: number,
+  _percent: number,
   statusText?: string
 ): void {
   if (!card) return;
-  const bar = card.querySelector('.aiagent-sdk-tool-bar') as HTMLElement | null;
-  if (bar) bar.style.setProperty('--p', Math.min(100, Math.max(0, percent)) + '%');
+  // 新结构没 bar 元素,只改 status 文字(percent 保留参数兼容)
   if (statusText) {
     const status = card.querySelector('.aiagent-sdk-tool-status') as HTMLElement | null;
     if (status) status.textContent = statusText;
@@ -222,4 +221,176 @@ export function finalizeThinking(card: HTMLElement): void {
   card.classList.remove('aiagent-sdk-thinking-expanded');
   const toggle = card.querySelector('.aiagent-sdk-thinking-toggle') as HTMLElement | null;
   if (toggle) toggle.textContent = '展开';
+}
+
+// ====================================================================
+// 工具调用卡片 — 跟思考卡(createThinkingCard)完全同构,只换颜色/文字
+//
+// 元素顺序:head { dot, name, status, toggle, [confirm, cancel] } + body
+//   流式:  --delta  body 累积 delta 原始字符串(灰)
+//   完整:  --pending body 替换为高亮 JSON
+//   折叠:  --done   body 收起成 0 高度
+//   展开:  --expanded body 高度提到 460px 可滚
+//   终态:  --confirmed / --cancelled 整卡配色变绿/红
+// ====================================================================
+
+/**
+ * 创建"参数加载中…"占位卡(灰态)。
+ * DOM 结构跟 createThinkingCard 镜像:head(dot + name + status + toggle) + body。
+ */
+export function appendToolCallDelta(
+  msgEl: HTMLElement,
+  id: string,
+  toolHint?: string
+): HTMLDivElement {
+  const card = document.createElement('div');
+  card.className =
+    'aiagent-sdk-tool-card aiagent-sdk-tool-card--delta';
+  card.setAttribute('role', 'status');
+  card.setAttribute('data-tool', toolHint || '...');
+  card.setAttribute('data-tool-id', id || '');
+
+  // 头部 —— 跟 .aiagent-sdk-thinking-head 同构
+  const head = document.createElement('div');
+  head.className = 'aiagent-sdk-tool-head';
+
+  const dot = document.createElement('span');
+  dot.className = 'aiagent-sdk-tool-dot';
+  dot.setAttribute('aria-hidden', 'true');
+
+  const name = document.createElement('span');
+  name.className = 'aiagent-sdk-tool-name';
+  name.textContent = toolHint || '加载工具…';
+
+  const status = document.createElement('span');
+  status.className = 'aiagent-sdk-tool-status';
+  status.textContent = '加载参数…';
+
+  const toggle = document.createElement('button');
+  toggle.className = 'aiagent-sdk-tool-toggle';
+  toggle.textContent = '展开';
+  toggle.addEventListener('click', (e) => {
+    e.stopPropagation();
+    const expanded = card.classList.toggle('aiagent-sdk-tool-expanded');
+    toggle.textContent = expanded ? '收起' : '展开';
+  });
+
+  head.appendChild(dot);
+  head.appendChild(name);
+  head.appendChild(status);
+  head.appendChild(toggle);
+
+  // 主体(累积显示 delta 原始字符串)
+  const body = document.createElement('pre');
+  body.className = 'aiagent-sdk-tool-body';
+  body.textContent = '';
+
+  card.appendChild(head);
+  card.appendChild(body);
+  msgEl.appendChild(card);
+  msgEl.scrollTop = msgEl.scrollHeight;
+  return card;
+}
+
+/**
+ * 把 tool_call_delta 的内容累加到占位卡的 body(纯文本,不解析)。
+ * 跟 setThinkingContent 同构(都是改 body 内容)。
+ */
+export function updateToolCallDelta(card: HTMLElement, delta: string): void {
+  if (!card) return;
+  const body = card.querySelector('.aiagent-sdk-tool-body') as HTMLElement | null;
+  if (!body) return;
+  body.textContent = (body.textContent || '') + (delta || '');
+  // 自动滚底
+  const msgEl = card.parentElement;
+  if (msgEl) msgEl.scrollTop = msgEl.scrollHeight;
+}
+
+/**
+ * 流式结束 — 把 delta 卡转成完整 tool_use 卡。
+ *   - name 改为真实工具名
+ *   - status 改为"等待执行"or"等待确认"
+ *   - body 替换成高亮 JSON
+ *   - 删除 --delta,加 --pending
+ * 跟 finalizeThinking(setThinkingContent) 同构(切状态 + 改文本)。
+ */
+export function promoteToConfirmedToolCall(
+  card: HTMLElement,
+  fullArgs: Record<string, unknown>,
+  toolName: string
+): void {
+  if (!card) return;
+  card.classList.remove('aiagent-sdk-tool-card--delta');
+  card.classList.add('aiagent-sdk-tool-card--pending');
+  card.setAttribute('data-tool', toolName || '');
+  // 名字
+  const name = card.querySelector('.aiagent-sdk-tool-name') as HTMLElement | null;
+  if (name) name.textContent = toolName || 'tool';
+  // 状态文字
+  const status = card.querySelector('.aiagent-sdk-tool-status') as HTMLElement | null;
+  if (status) status.textContent = '等待执行';
+  // 主体 — 高亮 JSON
+  const body = card.querySelector('.aiagent-sdk-tool-body') as HTMLElement | null;
+  if (body) {
+    body.innerHTML = jsonToHighlightedHtml(
+      JSON.stringify(fullArgs || {}, null, 2)
+    );
+  }
+}
+
+/**
+ * 在卡片 head 的 toggle 位置追加 ✓ 确认 / ✕ 取消 两个按钮(替换 toggle)。
+ * 返回 Promise<boolean>(true=确认,false=取消)。
+ * 跟 finalizeThinking(set 头 label) 同构 —— 都是改 head 文案。
+ */
+export function addConfirmActions(card: HTMLElement): Promise<boolean> {
+  return new Promise<boolean>((resolve) => {
+    if (!card) {
+      resolve(false);
+      return;
+    }
+    const head = card.querySelector('.aiagent-sdk-tool-head') as HTMLElement | null;
+    if (!head) {
+      resolve(false);
+      return;
+    }
+    // 删掉 toggle(确认时不需要展开/收起)
+    const oldToggle = head.querySelector('.aiagent-sdk-tool-toggle');
+    if (oldToggle) oldToggle.remove();
+    // 状态文字改"等待用户确认"
+    const status = head.querySelector('.aiagent-sdk-tool-status');
+    if (status) status.textContent = '⏸ 等待确认';
+
+    const confirmBtn = document.createElement('button');
+    confirmBtn.className = 'aiagent-sdk-tool-confirm-btn';
+    confirmBtn.textContent = '✓ 确认';
+    const cancelBtn = document.createElement('button');
+    cancelBtn.className = 'aiagent-sdk-tool-cancel-btn';
+    cancelBtn.textContent = '✕ 取消';
+    head.appendChild(confirmBtn);
+    head.appendChild(cancelBtn);
+
+    let resolved = false;
+    const finish = (ok: boolean) => {
+      if (resolved) return;
+      resolved = true;
+      confirmBtn.remove();
+      cancelBtn.remove();
+      resolve(ok);
+    };
+    confirmBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      card.classList.add('aiagent-sdk-tool-confirmed');
+      const st = head.querySelector('.aiagent-sdk-tool-status');
+      if (st) st.textContent = '✓ 已确认';
+      finish(true);
+    });
+    cancelBtn.addEventListener('click', (e) => {
+      e.stopPropagation();
+      card.classList.add('aiagent-sdk-tool-cancelled');
+      const st = head.querySelector('.aiagent-sdk-tool-status');
+      if (st) st.textContent = '✕ 已取消';
+      finish(false);
+    });
+  });
 }

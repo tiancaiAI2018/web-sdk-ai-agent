@@ -724,7 +724,8 @@ export const WIDGET_CSS = `
   border-left: 3px solid var(--aia-paint-3);
   font-family: var(--aia-mono);
   font-size: 12.5px;
-  overflow: hidden;        /* 关键:阻止 <pre> 触发 horizontal scrollbar */
+  /* 不加 overflow:hidden/overflow-x:hidden —— 否则多张堆叠变线;
+     水平溢出由 .aiagent-sdk-tool-body 的 word-break: break-word + white-space: pre-wrap 兜住 */
   animation: aia-tool-in 480ms var(--aia-anim-ease) forwards;
   position: relative;
   box-shadow: 0 4px 20px rgba(0, 0, 0, 0.4);
@@ -800,8 +801,21 @@ export const WIDGET_CSS = `
   white-space: pre-wrap;
   word-break: break-word;
   font-family: var(--aia-mono);
-  overflow: hidden;         /* 关键:不显示 native horizontal scrollbar */
   max-width: 100%;
+  min-height: 24px;        /* 防止空 body 压扁卡片变一条线 */
+  max-height: calc(460px - 20px);   /* 跟思考卡默认 460 高度对齐,扣 padding 20 */
+  overflow-y: auto;
+  overflow-x: hidden;      /* 长 token 水平滚动让 <pre> 触发 horizontal scrollbar 太丑,这里用 break-word 折行更自然 */
+  -webkit-mask-image: linear-gradient(
+    to bottom,
+    #000 0%, #000 92%,
+    transparent 100%
+  );
+  mask-image: linear-gradient(
+    to bottom,
+    #000 0%, #000 92%,
+    transparent 100%
+  );
 }
 /* JSON 字段配色(对比度 WCAG AA 4.5:1 验证通过)
  *   k (key) :粉 #f0abfc + 粗,极显眼
@@ -877,6 +891,225 @@ export const WIDGET_CSS = `
   font-variant-numeric: tabular-nums;
   min-width: 80px;          /* 给状态文字一个固定宽度,防止布局跳动 */
   text-align: right;
+}
+
+/* ====================================================================
+ * Tool 工具调用卡片 — 跟思考卡完全同构,只换颜色/文字
+ *
+ * 状态机(对应 iridescent.ts):
+ *   默认       :head 显 tool 名,body 显高亮 JSON(完整 args)
+ *   --delta    :流式累积阶段,body 显 delta 原始字符串(灰)
+ *   --pending  :完整 args 收齐,head 末尾追加 ✓ 确认 / ✕ 取消 按钮
+ *   --confirmed:用户已点确认,head 标 ✓
+ *   --cancelled:用户已点取消,整卡淡化 + 划线
+ *
+ * 结构跟 .aiagent-sdk-thinking-card 镜像:max-height(默认 200 / 折叠 48 /
+ * 展开 500)+ head 8 12 + dot 8x8 虹彩 + body 156px 限高 + mask 渐变。
+ * 颜色用 var(--aia-paint-3) 和 var(--aia-paint-4) 跟思考卡(paint-2)区分。
+ * ==================================================================== */
+.aiagent-sdk-tool-card {
+  align-self: stretch;
+  background: rgba(0, 0, 0, 0.25);
+  -webkit-backdrop-filter: blur(12px);
+  backdrop-filter: blur(12px);
+  border: 1px solid rgba(255, 255, 255, 0.06);
+  border-left: 2px solid var(--aia-paint-3);   /* 跟思考卡 paint-2 区分 */
+  border-radius: 10px;
+  /* 不加 overflow:hidden,否则多张堆叠变线(跟思考卡教训一致) */
+  animation: aia-thinking-in 320ms var(--aia-anim-ease) forwards;
+  transition: max-height 0.4s ease;
+  max-height: 200px;                            /* 跟思考卡默认 200 对齐 */
+}
+.aiagent-sdk-tool-card.aiagent-sdk-tool-done,
+.aiagent-sdk-tool-card.aiagent-sdk-tool-confirmed,
+.aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled {
+  max-height: 48px;   /* 跟思考卡 done 一样,48px 只露 head */
+}
+.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded {
+  max-height: 500px;  /* 跟思考卡 expanded 一样 */
+}
+
+/* 头部 —— 跟 .aiagent-sdk-thinking-head 镜像 */
+.aiagent-sdk-tool-head {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 12px;
+  border-bottom: 1px solid rgba(255, 255, 255, 0.05);
+  flex-shrink: 0;
+}
+
+/* 圆点 —— 跟 .aiagent-sdk-thinking-dot 镜像(同一套虹彩 conic) */
+.aiagent-sdk-tool-dot {
+  width: 8px;
+  height: 8px;
+  border-radius: 50%;
+  flex-shrink: 0;
+  background: conic-gradient(
+    from 0deg,
+    var(--aia-paint-1), var(--aia-paint-2),
+    var(--aia-paint-3), var(--aia-paint-4), var(--aia-paint-1)
+  );
+  animation: aia-core-spin 3s linear infinite;
+  box-shadow: 0 0 6px var(--aia-glow);
+}
+.aiagent-sdk-tool-done .aiagent-sdk-tool-dot {
+  background: var(--aia-success);
+  animation: none;
+  box-shadow: 0 0 6px var(--aia-success);
+}
+/* --delta 阶段:圆点灰化 + 弱化 box-shadow(避免视觉噪声) */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-card--delta .aiagent-sdk-tool-dot {
+  background: var(--aia-text-muted);
+  box-shadow: none;
+}
+
+/* 名字(对应思考卡的 label) */
+.aiagent-sdk-tool-name {
+  font-family: var(--aia-font);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--aia-text-muted);
+  flex: 1;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+/* 工具名正常色;--pending / --confirmed 时变主色 */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-card--pending .aiagent-sdk-tool-name,
+.aiagent-sdk-tool-card.aiagent-sdk-tool-confirmed .aiagent-sdk-tool-name {
+  color: var(--aia-text);
+  font-weight: 600;
+}
+
+/* 状态文字(替换思考卡"思考中"label) */
+.aiagent-sdk-tool-status {
+  flex-shrink: 0;
+  font-size: 11.5px;
+  color: var(--aia-text-faint);
+  letter-spacing: 0.02em;
+}
+
+/* 主体 —— 跟 .aiagent-sdk-thinking-body 镜像 */
+.aiagent-sdk-tool-body {
+  margin: 0;
+  padding: 10px 12px;
+  font-family: var(--aia-mono);
+  font-size: 11.5px;
+  line-height: 1.55;
+  color: var(--aia-text);
+  white-space: pre-wrap;
+  word-break: break-word;
+  overflow: hidden;
+  min-height: 24px;        /* 防止空 body 压扁卡片 */
+  max-height: 156px;       /* 跟思考卡 body 默认 156 对齐 */
+  mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
+  transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
+  opacity: 1;
+}
+/* --delta 阶段:body 显原始 delta 字符串,降低饱和 */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-card--delta .aiagent-sdk-tool-body {
+  color: var(--aia-text-muted);
+  font-style: italic;
+}
+/* 展开后:body 高度 + 滚动 + 覆盖 mask(跟思考卡 expanded 镜像) */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded .aiagent-sdk-tool-body {
+  max-height: calc(460px - 20px);
+  overflow-y: auto;
+  mask-image: none;
+  -webkit-mask-image: none;
+}
+/* done / confirmed / cancelled 状态:body 收起(跟思考卡 done 镜像) */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-done .aiagent-sdk-tool-body,
+.aiagent-sdk-tool-card.aiagent-sdk-tool-confirmed .aiagent-sdk-tool-body,
+.aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled .aiagent-sdk-tool-body {
+  max-height: 0;
+  padding-top: 0;
+  padding-bottom: 0;
+  opacity: 0;
+}
+
+/* 滚动条 */
+.aiagent-sdk-tool-body::-webkit-scrollbar { width: 6px; }
+.aiagent-sdk-tool-body::-webkit-scrollbar-thumb {
+  background: var(--aia-text-faint);
+  border-radius: 3px;
+}
+.aiagent-sdk-tool-body::-webkit-scrollbar-track { background: transparent; }
+
+/* 展开/收起按钮 —— 跟 .aiagent-sdk-thinking-toggle 镜像 */
+.aiagent-sdk-tool-toggle {
+  flex-shrink: 0;
+  background: rgba(255, 255, 255, 0.06);
+  border: none;
+  border-radius: 6px;
+  color: var(--aia-text-muted);
+  font-size: 11px;
+  font-family: var(--aia-font);
+  padding: 3px 10px;
+  min-height: 22px;
+  cursor: pointer;
+  transition: background 0.15s, color 0.15s;
+  line-height: 1.5;
+}
+.aiagent-sdk-tool-toggle:hover {
+  background: rgba(255, 255, 255, 0.12);
+  color: var(--aia-text);
+}
+
+/* === 确认按钮(--pending 时追加,跟 toggle 同位置) === */
+.aiagent-sdk-tool-confirm-btn,
+.aiagent-sdk-tool-cancel-btn {
+  flex-shrink: 0;
+  border: none;
+  border-radius: 6px;
+  font-size: 11px;
+  font-family: var(--aia-font);
+  padding: 3px 10px;
+  min-height: 22px;
+  cursor: pointer;
+  line-height: 1.5;
+  font-weight: 600;
+  letter-spacing: 0.02em;
+  transition: background 0.15s, color 0.15s, transform 0.12s;
+  margin-left: 2px;
+}
+.aiagent-sdk-tool-confirm-btn {
+  background: rgba(74, 222, 128, 0.20);
+  color: var(--aia-success);
+}
+.aiagent-sdk-tool-confirm-btn:hover {
+  background: rgba(74, 222, 128, 0.36);
+  transform: translateY(-1px);
+}
+.aiagent-sdk-tool-cancel-btn {
+  background: rgba(244, 63, 94, 0.16);
+  color: var(--aia-error);
+}
+.aiagent-sdk-tool-cancel-btn:hover {
+  background: rgba(244, 63, 94, 0.30);
+  transform: translateY(-1px);
+}
+
+/* --pending:左边线高亮成天蓝(等待确认/执行) */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-card--pending {
+  border-left-color: var(--aia-paint-4);   /* #93c5fd 天蓝,跟思考卡紫区分 */
+  border-left-width: 3px;
+}
+
+/* 终态:confirmed 整卡绿边、cancelled 整卡红边 + 名字划线 */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-confirmed {
+  border-left-color: var(--aia-success);
+  border-left-width: 3px;
+}
+.aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled {
+  border-left-color: var(--aia-error);
+  opacity: 0.65;
+}
+.aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled .aiagent-sdk-tool-name {
+  text-decoration: line-through;
+  color: var(--aia-text-faint);
 }
 
 /* ====================================================================

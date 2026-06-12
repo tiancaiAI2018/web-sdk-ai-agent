@@ -9,7 +9,13 @@
  *
  * data 字段可能因为 Spring 拆分多行,这里按 \n 拼起来再用 .replace(/\\n/g, '\n') 还原。
  */
-import type { SSEEvent, ToolCallPayload } from './types';
+import type {
+  SSEEvent,
+  ToolCallPayload,
+  ToolCallDeltaPayload,
+  ToolCallStartPayload,
+  ToolCallEndPayload,
+} from './types';
 
 export async function consumeSseStream(
   body: ReadableStream<Uint8Array>,
@@ -17,6 +23,9 @@ export async function consumeSseStream(
   onDone: () => void,
   onError: (e: Error) => void,
   onToolCall?: (parsed: ToolCallPayload) => void,
+  onToolCallDelta?: (parsed: ToolCallDeltaPayload) => void,
+  onToolCallStart?: (parsed: ToolCallStartPayload) => void,
+  onToolCallEnd?: (parsed: ToolCallEndPayload) => void,
   onThinking?: (text: string) => void
 ): Promise<void> {
   const reader = body.getReader();
@@ -57,16 +66,62 @@ export async function consumeSseStream(
       }
       if (ev.data) ev.data = ev.data.replace(/\\n/g, '\n');
 
-      if (ev.id === 'last') {
-        fireDone();
-        return;
+      // 关键:tool_call* 路由必须在 id:last 路由**之前**。
+      // 用户实测:流末尾帧序列是
+      //   1) 最后一个 tool_call_delta(无 id)
+      //   2) id:last + event:thinking
+      //   3) event:tool_call_end(无 id)
+      //   4) id:last 空 data 哨兵
+      //   5) id:last + event:tool_call(完整 args)
+      // 第 5 帧**也带 id:last**,如果先检查 id:last,onCall 永远不被触发。
+      // 解法:具体业务事件路由在前面;id:last 只作为兜底 fireDone 触发器。
+      if (ev.event === 'tool_call_start' && typeof onToolCallStart === 'function') {
+        try {
+          const parsed = JSON.parse(ev.data || '{}');
+          console.log('[AIAgent SDK 🚀 tool_call_start]', parsed);
+          onToolCallStart(parsed);
+        } catch (e) {
+          console.error('[AIAgent SDK] tool_call_start parse failed', e, ev.data);
+        }
+        continue;
       }
       if (ev.event === 'tool_call' && typeof onToolCall === 'function') {
         try {
-          onToolCall(JSON.parse(ev.data || '{}'));
+          const parsed = JSON.parse(ev.data || '{}');
+          console.log('[AIAgent SDK 🔧 tool_call]', parsed);
+          onToolCall(parsed);
         } catch (e) {
           console.error('[AIAgent SDK] tool_call parse failed', e, ev.data);
         }
+        continue;
+      }
+      if (ev.event === 'tool_call_delta' && typeof onToolCallDelta === 'function') {
+        try {
+          const parsed = JSON.parse(ev.data || '{}');
+          console.log('[AIAgent SDK 🔧 tool_call_delta]', parsed);
+          onToolCallDelta(parsed);
+        } catch (e) {
+          console.error('[AIAgent SDK] tool_call_delta parse failed', e, ev.data);
+        }
+        continue;
+      }
+      if (ev.event === 'tool_call_end' && typeof onToolCallEnd === 'function') {
+        try {
+          const parsed = ev.data ? JSON.parse(ev.data) : {};
+          console.log('[AIAgent SDK 🏁 tool_call_end]', parsed);
+          onToolCallEnd(parsed);
+        } catch (e) {
+          // data 可能是空字符串,允许解析失败
+          console.log('[AIAgent SDK 🏁 tool_call_end] (no data)');
+          onToolCallEnd({});
+        }
+        continue;
+      }
+      if (ev.id === 'last') {
+        // 兜底:任何带 id:last 的帧(thinking / 纯文字 / 空哨兵)都触发 fireDone。
+        // 幂等保护由 doneCalled 标志位保证。
+        // 用 continue 而非 return —— 切本帧后继续 while,buf 后续帧还要处理。
+        fireDone();
         continue;
       }
       if (ev.event === 'thinking' && typeof onThinking === 'function') {

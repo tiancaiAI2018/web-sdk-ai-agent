@@ -85,6 +85,25 @@ export interface ToolCallPayload {
   id?: string;
 }
 
+/** tool_call_delta 帧的载荷(LLM 流式分片 args 增量) */
+export interface ToolCallDeltaPayload {
+  id: string;
+  delta: string;
+  /** 后端给的真实 tool 名(LLM 在 __fragment__ 中间帧也会带,这里始终是真实名) */
+  name?: string;
+}
+
+/** tool_call_start 帧的载荷(宣告,让前端先建占位卡 + 记 tool 名) */
+export interface ToolCallStartPayload {
+  id: string;
+  name: string;
+}
+
+/** tool_call_end 帧的载荷(流式结束标记,data 为空) */
+export interface ToolCallEndPayload {
+  id?: string;
+}
+
 // ====================================================================
 // 公共 API 入参形状
 // ====================================================================
@@ -110,6 +129,9 @@ export interface StreamOptions {
   onDone?: () => void;
   onError?: (e: Error) => void;
   onToolCall?: (parsed: ToolCallPayload) => void;
+  onToolCallDelta?: (parsed: ToolCallDeltaPayload) => void;
+  onToolCallStart?: (parsed: ToolCallStartPayload) => void;
+  onToolCallEnd?: (parsed: ToolCallEndPayload) => void;
   onThinking?: (text: string) => void;
   activeTools?: string[];
 }

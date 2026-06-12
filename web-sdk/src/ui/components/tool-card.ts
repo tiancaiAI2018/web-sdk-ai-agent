@@ -12,6 +12,10 @@ export {
   createThinkingCard,
   setThinkingContent,
   finalizeThinking,
+  appendToolCallDelta,
+  updateToolCallDelta,
+  promoteToConfirmedToolCall,
+  addConfirmActions,
 } from './iridescent';
 
 // 兼容旧引用(message.ts 早期版本用过 createToolCallEl)
