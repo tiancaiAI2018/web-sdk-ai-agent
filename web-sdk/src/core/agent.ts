@@ -429,10 +429,16 @@ export class AIAgent {
         refs.msgEl.scrollTop = refs.msgEl.scrollHeight;
       },
       onDone: () => {
-        upgradeTyping();
-        unmarkTypingActive(typing); // 移除流式光标
-        typing.innerHTML = renderMarkdownLite(assistantBuf);
-        decorateImages(typing);
+        if (!replaced && !assistantBuf) {
+          // 整个 stream 没有文字帧(只有 thinking + tool_call)→
+          // typing 占位 div 一直是粒子状态,没有文字内容,删掉避免空白框
+          typing.remove();
+        } else {
+          upgradeTyping();
+          unmarkTypingActive(typing);
+          typing.innerHTML = renderMarkdownLite(assistantBuf);
+          decorateImages(typing);
+        }
         refs.msgEl.scrollTop = refs.msgEl.scrollHeight;
         // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
         // 避免用户在工具结果回传完成前又发新消息撞 409

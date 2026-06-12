@@ -925,9 +925,6 @@ export const WIDGET_CSS = `
 .aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled {
   max-height: 48px;   /* 跟思考卡 done 一样,48px 只露 head */
 }
-.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded {
-  max-height: 500px;  /* 跟思考卡 expanded 一样 */
-}
 
 /* 头部 —— 跟 .aiagent-sdk-thinking-head 镜像 */
 .aiagent-sdk-tool-head {
@@ -991,7 +988,7 @@ export const WIDGET_CSS = `
 }
 
 /* 主体 —— 跟 .aiagent-sdk-thinking-body 镜像 */
-.aiagent-sdk-tool-body {
+.aiagent-sdk-tool-card .aiagent-sdk-tool-body {
   margin: 0;
   padding: 10px 12px;
   font-family: var(--aia-mono);
@@ -1000,9 +997,9 @@ export const WIDGET_CSS = `
   color: var(--aia-text);
   white-space: pre-wrap;
   word-break: break-word;
-  overflow: hidden;
-  min-height: 24px;        /* 防止空 body 压扁卡片 */
-  max-height: 156px;       /* 跟思考卡 body 默认 156 对齐 */
+  overflow: hidden;             /* 默认截断,卡保持 200px */
+  min-height: 24px;             /* 防止空 body 压扁卡片 */
+  max-height: 156px;            /* 跟思考卡 body 默认 156 对齐 */
   mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
   -webkit-mask-image: linear-gradient(to bottom, black 60%, transparent 100%);
   transition: max-height 0.35s ease, opacity 0.25s ease, padding 0.35s ease;
@@ -1012,13 +1009,6 @@ export const WIDGET_CSS = `
 .aiagent-sdk-tool-card.aiagent-sdk-tool-card--delta .aiagent-sdk-tool-body {
   color: var(--aia-text-muted);
   font-style: italic;
-}
-/* 展开后:body 高度 + 滚动 + 覆盖 mask(跟思考卡 expanded 镜像) */
-.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded .aiagent-sdk-tool-body {
-  max-height: calc(460px - 20px);
-  overflow-y: auto;
-  mask-image: none;
-  -webkit-mask-image: none;
 }
 /* done / confirmed / cancelled 状态:body 收起(跟思考卡 done 镜像) */
 .aiagent-sdk-tool-card.aiagent-sdk-tool-done .aiagent-sdk-tool-body,
@@ -1096,6 +1086,7 @@ export const WIDGET_CSS = `
 .aiagent-sdk-tool-card.aiagent-sdk-tool-card--pending {
   border-left-color: var(--aia-paint-4);   /* #93c5fd 天蓝,跟思考卡紫区分 */
   border-left-width: 3px;
+  max-height: 200px;                        /* 显式覆盖,跟 .aiagent-sdk-tool-card 默认一致 */
 }
 
 /* 终态:confirmed 整卡绿边、cancelled 整卡红边 + 名字划线 */
@@ -1110,6 +1101,21 @@ export const WIDGET_CSS = `
 .aiagent-sdk-tool-card.aiagent-sdk-tool-cancelled .aiagent-sdk-tool-name {
   text-decoration: line-through;
   color: var(--aia-text-faint);
+}
+
+/* === 展开状态 — 必须写在所有 max-height 规则最后,覆盖 --done/--confirmed/--cancelled/--pending === */
+.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded {
+  max-height: 500px;  /* 跟思考卡 expanded 一样 */
+}
+.aiagent-sdk-tool-card.aiagent-sdk-tool-expanded .aiagent-sdk-tool-body {
+  max-height: calc(460px - 20px);
+  overflow-y: auto;
+  mask-image: none;
+  -webkit-mask-image: none;
+  /* 覆盖 --confirmed / --cancelled 的 opacity:0 / padding:0(跟思考卡 expanded 一样的处理) */
+  padding-top: 10px;
+  padding-bottom: 10px;
+  opacity: 1;
 }
 
 /* ====================================================================

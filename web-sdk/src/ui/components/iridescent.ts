@@ -89,6 +89,11 @@ export function markToolCardSuccess(
 ): void {
   if (!card) return;
   card.classList.add('aiagent-sdk-tool-success');
+  // 新结构卡:加 --confirmed 触发 48px 折叠(跟思考卡 done 一样)
+  if (card.classList.contains('aiagent-sdk-tool-card--pending')) {
+    card.classList.add('aiagent-sdk-tool-confirmed');
+    card.classList.remove('aiagent-sdk-tool-card--pending');
+  }
   const status = card.querySelector('.aiagent-sdk-tool-status') as HTMLElement | null;
   if (status) status.textContent = statusText;
 }
