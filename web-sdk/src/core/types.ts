@@ -64,6 +64,58 @@ export interface AIAgentOptions {
 }
 
 // ====================================================================
+// 工具面板(ToolPanel)
+// ====================================================================
+
+/**
+ * 工具面板条目 — 宿主页面通过 registerToolPanel 注入,
+ * SDK 浮窗内渲染为可交互的按钮/开关。
+ *
+ * 两种类型:
+ *   - toggle: 开关型(如"字典查询"),开=注入工具,关=移除工具
+ *   - action: 即时执行型(如"清空表单"),点一次执行一次
+ *
+ * 混合模式:
+ *   - toggle 型:SDK 始终自动管理(addEphemeralTools / removeEphemeralTools)
+ *   - 如果传了 onToggle 回调,SDK 在自动管理之后额外调用(用于状态同步等)
+ *   - action 型:点一次执行一次 onExecute 回调
+ */
+export interface ToolPanelItem {
+  /** 唯一标识,同时作为 toggle 型的工具名 */
+  name: string;
+  /** 显示文本 */
+  label: string;
+  /** 图标(emoji 或文字),如 "📖"、"🗑️" */
+  icon?: string;
+  /** 提示文本(hover 时显示) */
+  description?: string;
+  /** 条目类型:toggle=开关,action=即时执行 */
+  type: 'toggle' | 'action';
+  /**
+   * toggle 专用:初始状态是否开启。默认 false。
+   * 如果为 true,SDK 在注册时自动 addEphemeralTools。
+   */
+  defaultOn?: boolean;
+  /**
+   * toggle 专用:工具定义。
+   * SDK 自动用此定义调 addEphemeralTools / removeEphemeralTools。
+   * 传了 onToggle 时,SDK 仍自动管理,同时额外调 onToggle 回调。
+   */
+  tool?: ToolDef;
+  /**
+   * toggle 专用:额外回调(在 SDK 自动管理之后调用)。
+   * 传了此回调 → SDK 仍自动管理工具注入/移除(如果有 tool 字段),
+   *              同时额外调此回调(用于宿主页面做状态同步、日志等)。
+   * 不传 → SDK 只做自动管理,无额外回调。
+   */
+  onToggle?: (isOn: boolean) => void | Promise<void>;
+  /**
+   * action 专用:执行回调。
+   */
+  onExecute?: () => void | Promise<void>;
+}
+
+// ====================================================================
 // 消息 + 会话
 // ====================================================================
 

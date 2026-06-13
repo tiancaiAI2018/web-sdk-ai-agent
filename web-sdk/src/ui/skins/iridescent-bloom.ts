@@ -1544,4 +1544,116 @@ export const IRIDESCENT_BLOOM_CSS = `
   cursor: zoom-in;
   background: rgba(255, 255, 255, 0.03);
 }
+
+/* ====================================================================
+ * 工具面板(ToolPanel)
+ * ==================================================================== */
+
+/* 工具面板容器:header 下方的下拉面板 */
+.aiagent-sdk-tool-panel {
+  max-height: 0;
+  overflow: hidden;
+  transition: max-height 0.3s ease, padding 0.3s ease;
+  background: rgba(255, 255, 255, 0.03);
+  border-bottom: 1px solid var(--aia-border);
+  padding: 0 12px;
+}
+.aiagent-sdk-tool-panel.aiagent-sdk-tool-panel-open {
+  max-height: 300px;
+  padding: 8px 12px 10px;
+}
+
+/* 面板标题 */
+.aiagent-sdk-tp-title {
+  font-size: 11px;
+  color: var(--aia-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.5px;
+  margin-bottom: 6px;
+  padding-bottom: 4px;
+  border-bottom: 1px solid var(--aia-border);
+}
+
+/* 每个工具条目 */
+.aiagent-sdk-tp-item {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 7px 8px;
+  border-radius: 6px;
+  cursor: pointer;
+  transition: background 0.15s;
+  user-select: none;
+}
+.aiagent-sdk-tp-item:hover {
+  background: rgba(255, 255, 255, 0.06);
+}
+
+/* 图标 */
+.aiagent-sdk-tp-icon {
+  font-size: 14px;
+  width: 20px;
+  text-align: center;
+  flex-shrink: 0;
+}
+
+/* 标签 */
+.aiagent-sdk-tp-label {
+  flex: 1;
+  font-size: 13px;
+  color: var(--aia-text);
+}
+
+/* Toggle 开关 */
+.aiagent-sdk-tp-switch {
+  width: 32px;
+  height: 18px;
+  border-radius: 9px;
+  background: rgba(255, 255, 255, 0.12);
+  position: relative;
+  transition: background 0.2s;
+  flex-shrink: 0;
+}
+.aiagent-sdk-tp-on .aiagent-sdk-tp-switch {
+  background: var(--aia-paint-1);
+}
+.aiagent-sdk-tp-switch-knob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: #fff;
+  transition: transform 0.2s;
+  box-shadow: 0 1px 3px rgba(0,0,0,0.3);
+}
+.aiagent-sdk-tp-on .aiagent-sdk-tp-switch-knob {
+  transform: translateX(14px);
+}
+
+/* Action 箭头 */
+.aiagent-sdk-tp-arrow {
+  font-size: 12px;
+  color: var(--aia-text-faint);
+  flex-shrink: 0;
+  transition: color 0.15s, transform 0.15s;
+}
+.aiagent-sdk-tp-item:hover .aiagent-sdk-tp-arrow {
+  color: var(--aia-paint-1);
+  transform: translateX(2px);
+}
+
+/* Action 点击闪光 */
+.aiagent-sdk-tp-flash {
+  background: rgba(94, 234, 212, 0.15) !important;
+}
+
+/* Toggle off 状态标签变淡 */
+.aiagent-sdk-tp-off .aiagent-sdk-tp-label {
+  color: var(--aia-text-muted);
+}
+.aiagent-sdk-tp-on .aiagent-sdk-tp-label {
+  color: var(--aia-text);
+}
 `;

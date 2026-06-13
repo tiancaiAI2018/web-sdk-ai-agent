@@ -128,10 +128,7 @@
   <!-- 操作区 -->
   <div class="demo-section">
     <h3>操作面板</h3>
-    <p>点击"注入字典工具"后,AI 就能通过 query_dict 查询编码(含级联)。跟 AI 说"帮我录一单"即可体验。</p>
-    <button id="btn-inject-dict">注入字典工具(query_dict + 级联)</button>
-    <button id="btn-remove-dict">移除字典工具</button>
-    <button id="btn-clear-form">清空表单</button>
+    <p>工具按钮已集成到右下角 AI 浮窗的 🔧 工具面板中,点击浮窗头部的 🔧 按钮即可开关工具。</p>
     <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;font-size:13px;">字典工具: 未注入 | 持久工具: submit_order</p>
     <div id="log-area" class="log-area">等待操作...</div>
   </div>
@@ -306,7 +303,7 @@
       theme: 'light',
       position: 'bottom-right',
       clientPrefix: 'demo-app',
-      builtinTools: { changeSkin: false },
+      builtinTools: { changeSkin: true },
       persistentTools: [{
         name: 'submit_order',
         description:
@@ -369,15 +366,15 @@
       }]
     });
 
+    // ===== 1.5 注册内置 changeSkin 工具 =====
+    AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
+    log('内置 changeSkin 工具已注册(持久,所有会话生效)');
+
     // ===== 2. 字典工具(含级联配置) =====
     var dictInjected = false;
 
-    document.getElementById('btn-inject-dict').addEventListener('click', function () {
-      if (dictInjected) {
-        log('字典工具已注入,跳过');
-        return;
-      }
-
+    // 创建字典工具定义(供 registerToolPanel toggle 使用)
+    function createDictTool() {
       var queryDictTool = AIAgent.dictTool({
         endpoint: 'http://localhost:8080',
         dictTypes: ['city', 'product', 'warehouse', 'category', 'urgency', 'payment', 'device_type', 'device_model'],
@@ -391,7 +388,6 @@
           device_type:  '设备类型(电脑/手机/平板/耳机/手表)',
           device_model: '设备型号(依赖设备类型,查询时必须传 parentCode)'
         },
-        // 级联关系:AI 会自动感知"查型号前必须先查类型"
         cascades: [{
           parentType: 'device_type',
           childType: 'device_model',
@@ -415,45 +411,155 @@
         });
       };
 
-      agent.addEphemeralTools([queryDictTool]);
-      dictInjected = true;
-      updateStatus();
-      log('已注入字典工具 query_dict(8种字典类型,含级联:device_type→device_model)');
-    });
+      return queryDictTool;
+    }
 
-    document.getElementById('btn-remove-dict').addEventListener('click', function () {
-      if (!dictInjected) {
-        log('字典工具未注入,跳过');
-        return;
+    // ===== 3. 注册工具面板(SDK 浮窗内 🔧 按钮) =====
+
+    // 创建 create_skin 工具定义(AI 可动态创建皮肤)
+    var createSkinTool = {
+      name: 'create_skin',
+      description:
+        '动态创建一个新皮肤并注册到皮肤列表。创建后需用 change_skin 工具切换到新皮肤。\n' +
+        '只需指定皮肤名、风格描述和关键颜色,SDK 会从内置皮肤派生。\n' +
+        'base 可选 iridescent-bloom(深色油彩) 或 classic(浅色极简)。',
+      parameters: {
+        type: 'object',
+        properties: {
+          name: {
+            type: 'string',
+            description: '新皮肤的唯一名称,如 "ocean"、"sunset"、"forest"'
+          },
+          base: {
+            type: 'string',
+            enum: ['iridescent-bloom', 'classic'],
+            description: '基于哪个内置皮肤派生。深色主题选 iridescent-bloom,浅色选 classic'
+          },
+          description: {
+            type: 'string',
+            description: '皮肤风格简短描述,如 "深海蓝绿主题,适合开发者"'
+          },
+          primaryColor: {
+            type: 'string',
+            description: '主色调十六进制值,如 "#0ea5e9"(天蓝)、"#f97316"(橙)'
+          },
+          secondaryColor: {
+            type: 'string',
+            description: '次要色调十六进制值'
+          },
+          accentColor: {
+            type: 'string',
+            description: '强调色十六进制值'
+          },
+          fontStack: {
+            type: 'string',
+            enum: ['mixed', 'serif', 'mono', 'system'],
+            description: '字体风格。mixed=中英混排,serif=衬线,mono=等宽,system=系统'
+          }
+        },
+        required: ['name', 'base', 'description', 'primaryColor']
+      },
+      strict: false,
+      onCall: function (payload) {
+        var baseName = payload.base || 'iridescent-bloom';
+        var baseSkin = baseName === 'classic' ? AIAgent.CLASSIC : AIAgent.IRIDESCENT_BLOOM;
+
+        // 从 AI 提供的颜色生成 CSS 变量覆盖段
+        var p = payload.primaryColor || '#0ea5e9';
+        var s = payload.secondaryColor || p;
+        var a = payload.accentColor || p;
+        var skinName = payload.name;
+
+        var overrideCSS = baseSkin.css + '\n' + [
+          ':host([data-skin="' + skinName + '"]),',
+          ':host([data-skin="' + skinName + '"]) [data-skin="' + skinName + '"] {',
+          '  --aia-paint-1: ' + p + ';',
+          '  --aia-paint-2: ' + s + ';',
+          '  --aia-paint-3: ' + a + ';',
+          '  --aia-paint-4: ' + p + ';',
+          '  --aia-paint-5: ' + s + ';',
+          '  --aia-glow:    ' + p + ';',
+          '}'
+        ].join('\n');
+
+        var layoutOverride = {};
+        if (payload.fontStack) layoutOverride.fontStack = payload.fontStack;
+
+        var newSkin = AIAgent.deriveSkin(baseSkin, {
+          name: skinName,
+          css: overrideCSS,
+          layout: layoutOverride,
+          aiHint: payload.description || ('自定义皮肤: ' + skinName),
+        });
+
+        agent.registerSkin(newSkin);
+        log('AI 创建了新皮肤: ' + skinName + ' (基于 ' + baseName + ', 主色 ' + p + ')');
+
+        return {
+          ok: true,
+          skinName: skinName,
+          base: baseName,
+          message: '皮肤 "' + skinName + '" 已创建并注册。请用 change_skin 工具切换到该皮肤。'
+        };
       }
-      agent.removeEphemeralTools(['query_dict']);
-      dictInjected = false;
-      updateStatus();
-      log('已移除字典工具 query_dict');
-    });
+    };
 
-    document.getElementById('btn-clear-form').addEventListener('click', function () {
-      document.querySelectorAll('input[data-field]').forEach(function (el) {
-        el.value = '';
-        el.classList.remove('filled');
-      });
-      document.querySelectorAll('select[data-dict]').forEach(function (sel) {
-        sel.selectedIndex = 0;
-        sel.classList.remove('filled');
-        var tagEl = document.getElementById(sel.id + '-tag');
-        if (tagEl) tagEl.textContent = '';
-      });
-      // 重置级联
-      deviceModelSelect.disabled = true;
-      deviceModelSelect.innerHTML = '<option value="">-- 请先选择设备类型 --</option>';
-      cascadeHint.textContent = '选择设备类型后,型号列表自动过滤';
-      log('表单已清空');
-    });
+    agent.registerToolPanel([
+      {
+        name: 'query_dict',
+        label: '字典查询',
+        icon: '📖',
+        description: '开启后 AI 可通过 query_dict 工具查询字典编码(含级联)',
+        type: 'toggle',
+        defaultOn: false,
+        tool: createDictTool(),
+        onToggle: function (isOn) {
+          dictInjected = isOn;
+          updateStatus();
+          log(isOn ? '已注入字典工具 query_dict(8种字典类型,含级联)' : '已移除字典工具 query_dict');
+        }
+      },
+      {
+        name: 'create_skin',
+        label: '创建皮肤',
+        icon: '🎨',
+        description: '开启后 AI 可通过 create_skin 工具动态创建皮肤',
+        type: 'toggle',
+        defaultOn: false,
+        tool: createSkinTool,
+        onToggle: function (isOn) {
+          log(isOn ? '已注入 create_skin 工具(AI 可动态创建皮肤)' : '已移除 create_skin 工具');
+        }
+      },
+      {
+        name: 'clear_form',
+        label: '清空表单',
+        icon: '🗑️',
+        description: '清空所有表单字段',
+        type: 'action',
+        onExecute: function () {
+          document.querySelectorAll('input[data-field]').forEach(function (el) {
+            el.value = '';
+            el.classList.remove('filled');
+          });
+          document.querySelectorAll('select[data-dict]').forEach(function (sel) {
+            sel.selectedIndex = 0;
+            sel.classList.remove('filled');
+            var tagEl = document.getElementById(sel.id + '-tag');
+            if (tagEl) tagEl.textContent = '';
+          });
+          deviceModelSelect.disabled = true;
+          deviceModelSelect.innerHTML = '<option value="">-- 请先选择设备类型 --</option>';
+          cascadeHint.textContent = '选择设备类型后,型号列表自动过滤';
+          log('表单已清空');
+        }
+      }
+    ]);
 
     function updateStatus() {
       var el = document.getElementById('status-line');
-      el.textContent = '字典工具: ' + (dictInjected ? '已注入(query_dict + 级联)' : '未注入') +
-        ' | 持久工具: submit_order';
+      el.textContent = '字典: ' + (dictInjected ? '已注入' : '未注入') +
+        ' | changeSkin: 开启 | 持久工具: submit_order';
     }
 
     // ===== 3. 自动打开浮窗 =====

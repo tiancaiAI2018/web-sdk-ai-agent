@@ -205,6 +205,10 @@ export class AIAgent {
         /* no-op,保留钩子 */
       },
       onCycleSkin: (nextName: string) => this.setSkin(nextName),
+      onToolPanelToggle: (name: string, isOn: boolean, isAutoManaged: boolean) =>
+        this._handleToolPanelToggle(name, isOn, isAutoManaged),
+      onToolPanelAction: (name: string) =>
+        this._handleToolPanelAction(name),
     });
     this._widget.mount();
 
@@ -495,6 +499,82 @@ export class AIAgent {
   /** 列出所有已注册皮肤的详细信息(含 aiHint,供 LLM changeSkin 工具用) */
   listSkinsWithInfo(): Array<{ name: string; aiHint: string }> {
     return SkinRegistry.instance().listWithInfo();
+  }
+
+  // ====================================================================
+  // 公共 API — 工具面板(ToolPanel)
+  // ====================================================================
+
+  /**
+   * 注册工具面板条目。调一次,浮窗 header 出现 🔧 按钮,点击展开面板。
+   * 可多次调,追加而非覆盖。
+   *
+   * 混合模式:
+   *   - toggle 型:未传 onToggle → SDK 自动管理(addEphemeralTools / removeEphemeralTools)
+   *                 传了 onToggle → 手动管理,宿主页面自己决定注入/移除逻辑
+   *   - action 型:点一次执行一次 onExecute 回调
+   *
+   * 示例:
+   *   agent.registerToolPanel([
+   *     { name: 'query_dict', label: '字典查询', icon: '📖', type: 'toggle',
+   *       tool: dictToolDef, defaultOn: false },
+   *     { name: 'clear_form', label: '清空表单', icon: '🗑️', type: 'action',
+   *       onExecute: () => { document.getElementById('myForm').reset(); } }
+   *   ]);
+   */
+  registerToolPanel(items: import('./types').ToolPanelItem[]): void {
+    if (!this._widget) return;
+    this._widget.registerToolPanelItems(items);
+
+    // 处理 defaultOn 的 toggle:自动注入工具
+    for (const item of items) {
+      if (item.type === 'toggle' && item.defaultOn && item.tool && !item.onToggle) {
+        // 自动管理模式:defaultOn=true 时立即注入
+        void this.addEphemeralTools([item.tool]);
+      }
+    }
+  }
+
+  /**
+   * 工具面板 toggle 回调处理。
+   * 有 tool 字段时始终自动管理(addEphemeralTools / removeEphemeralTools);
+   * 如果传了 onToggle 回调,额外调用(用于宿主页面做状态同步等)。
+   */
+  private _handleToolPanelToggle(name: string, isOn: boolean, _isAutoManaged: boolean): void {
+    if (!this._widget) return;
+
+    const items = (this._widget as any)._toolPanelItems as import('./types').ToolPanelItem[] | undefined;
+    const item = items?.find((i) => i.name === name);
+    if (!item) return;
+
+    // 有 tool 字段 → SDK 自动管理工具注入/移除
+    if (item.tool) {
+      if (isOn) {
+        void this.addEphemeralTools([item.tool]);
+      } else {
+        void this.removeEphemeralTools([item.tool.name]);
+      }
+    }
+
+    // 如果用户传了 onToggle,也调一下(额外逻辑,如状态同步)
+    if (typeof item.onToggle === 'function') {
+      void item.onToggle(isOn);
+    }
+  }
+
+  /**
+   * 工具面板 action 回调处理。
+   */
+  private _handleToolPanelAction(name: string): void {
+    if (!this._widget) return;
+
+    const items = (this._widget as any)._toolPanelItems as import('./types').ToolPanelItem[] | undefined;
+    const item = items?.find((i) => i.name === name);
+    if (!item || item.type !== 'action') return;
+
+    if (typeof item.onExecute === 'function') {
+      void item.onExecute();
+    }
   }
 
   /**

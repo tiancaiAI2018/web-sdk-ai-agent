@@ -16,6 +16,7 @@
 import { WIDGET_CSS } from './styles';
 import { Skin, SkinRegistry, skinForTheme, resolveLayout } from '../core/skin';
 import type { SkinLayout } from '../core/skin';
+import type { ToolPanelItem } from '../core/types';
 
 export interface WidgetOpts {
   title?: string;
@@ -39,6 +40,16 @@ export interface WidgetHandlers {
    * 不传 = widget 自己循环,不做消息重放(适合 demo)。
    */
   onCycleSkin?: (nextName: string) => void;
+  /**
+   * 工具面板 toggle 变化回调。
+   * isAutoManaged=true 时 SDK 自动管理工具注入/移除,此回调仅做额外逻辑;
+   * isAutoManaged=false 时(用户传了 onToggle),SDK 不自动管理,由此回调全权处理。
+   */
+  onToolPanelToggle?: (name: string, isOn: boolean, isAutoManaged: boolean) => void | Promise<void>;
+  /**
+   * 工具面板 action 执行回调。
+   */
+  onToolPanelAction?: (name: string) => void | Promise<void>;
 }
 
 export interface WidgetRefs {
@@ -77,6 +88,14 @@ export class Widget {
   }
   /** 用户已输入但未发送的文本 —— applySkin 重 mount 时恢复 */
   private _pendingInput = '';
+  /** 工具面板条目列表 */
+  private _toolPanelItems: ToolPanelItem[] = [];
+  /** 工具面板 toggle 状态(name → isOn) */
+  private _toolPanelStates: Map<string, boolean> = new Map();
+  /** 工具面板容器 DOM */
+  private _toolPanelEl: HTMLDivElement | null = null;
+  /** 工具面板是否展开 */
+  private _toolPanelOpen = false;
 
   constructor(
     private readonly opts: WidgetOpts,
@@ -486,6 +505,199 @@ export class Widget {
       dot.style.background = c;
       this.sendBtn.appendChild(dot);
       setTimeout(() => dot.remove(), 750);
+    }
+  }
+
+  // ====================================================================
+  // 工具面板(ToolPanel)
+  // ====================================================================
+
+  /**
+   * 注册工具面板条目。调一次,浮窗 header 出现 🔧 按钮,点击展开面板。
+   * 可多次调,追加而非覆盖。
+   */
+  registerToolPanelItems(items: ToolPanelItem[]): void {
+    for (const item of items) {
+      // 去重:同名覆盖
+      this._toolPanelItems = this._toolPanelItems.filter((i) => i.name !== item.name);
+      this._toolPanelItems.push(item);
+      // 初始化 toggle 状态
+      if (item.type === 'toggle') {
+        this._toolPanelStates.set(item.name, !!item.defaultOn);
+      }
+    }
+    this._renderToolPanel();
+  }
+
+  /** 获取指定 toggle 的当前状态 */
+  getToolPanelState(name: string): boolean {
+    return this._toolPanelStates.get(name) || false;
+  }
+
+  /** 外部设置 toggle 状态(如 agent 自动管理后同步 UI) */
+  setToolPanelState(name: string, isOn: boolean): void {
+    this._toolPanelStates.set(name, isOn);
+    this._updateToolPanelUI();
+  }
+
+  /** 渲染/更新工具面板(含 header 按钮 + 下拉面板) */
+  private _renderToolPanel(): void {
+    if (!this.panel || !this.shadow) return;
+
+    // 没有工具条目时,移除面板按钮
+    if (this._toolPanelItems.length === 0) {
+      const oldBtn = this.panel.querySelector('.aiagent-sdk-tool-panel-btn');
+      if (oldBtn) oldBtn.remove();
+      if (this._toolPanelEl) {
+        this._toolPanelEl.remove();
+        this._toolPanelEl = null;
+      }
+      return;
+    }
+
+    // 在 header-actions 里插入 🔧 按钮(如果还没有)
+    let btn = this.panel.querySelector('.aiagent-sdk-tool-panel-btn') as HTMLButtonElement | null;
+    if (!btn) {
+      const actions = this.panel.querySelector('.aiagent-sdk-header-actions');
+      if (!actions) return;
+      btn = document.createElement('button');
+      btn.className = 'aiagent-sdk-iconbtn aiagent-sdk-tool-panel-btn';
+      btn.title = '工具面板';
+      btn.setAttribute('aria-label', '工具面板');
+      btn.textContent = '🔧';
+      // 插到换肤按钮前面(如果有的话),否则插到 subtitle 后面
+      const skinBtn = actions.querySelector('.aiagent-sdk-cycle-skin');
+      if (skinBtn) {
+        actions.insertBefore(btn, skinBtn);
+      } else {
+        actions.insertBefore(btn, actions.children[1]); // subtitle 后面
+      }
+      btn.addEventListener('click', () => this._toggleToolPanel());
+    }
+
+    // 渲染下拉面板
+    this._renderToolPanelDropdown();
+  }
+
+  /** 展开/收起工具面板 */
+  private _toggleToolPanel(): void {
+    this._toolPanelOpen = !this._toolPanelOpen;
+    if (this._toolPanelEl) {
+      this._toolPanelEl.classList.toggle('aiagent-sdk-tool-panel-open', this._toolPanelOpen);
+    }
+    // 点击外部关闭
+    if (this._toolPanelOpen) {
+      setTimeout(() => {
+        const handler = (e: MouseEvent) => {
+          if (this._toolPanelEl && !this._toolPanelEl.contains(e.target as Node)) {
+            this._toolPanelOpen = false;
+            this._toolPanelEl.classList.remove('aiagent-sdk-tool-panel-open');
+            document.removeEventListener('click', handler);
+          }
+        };
+        document.addEventListener('click', handler);
+      }, 0);
+    }
+  }
+
+  /** 渲染工具面板下拉内容 */
+  private _renderToolPanelDropdown(): void {
+    if (!this.panel) return;
+
+    // 确保容器存在
+    if (!this._toolPanelEl) {
+      this._toolPanelEl = document.createElement('div');
+      this._toolPanelEl.className = 'aiagent-sdk-tool-panel';
+      // 插到 header 后面
+      const header = this.panel.querySelector('.aiagent-sdk-header');
+      if (header && header.nextSibling) {
+        this.panel.insertBefore(this._toolPanelEl, header.nextSibling);
+      } else {
+        this.panel.appendChild(this._toolPanelEl);
+      }
+    }
+
+    // 构建 HTML
+    const items = this._toolPanelItems.map((item) => {
+      const icon = item.icon || (item.type === 'toggle' ? '🔌' : '⚡');
+      const isOn = item.type === 'toggle' ? (this._toolPanelStates.get(item.name) || false) : false;
+      const toggleClass = item.type === 'toggle'
+        ? `aiagent-sdk-tp-toggle ${isOn ? 'aiagent-sdk-tp-on' : 'aiagent-sdk-tp-off'}`
+        : 'aiagent-sdk-tp-action';
+      const controlHTML = item.type === 'toggle'
+        ? `<span class="aiagent-sdk-tp-switch"><span class="aiagent-sdk-tp-switch-knob"></span></span>`
+        : `<span class="aiagent-sdk-tp-arrow">→</span>`;
+      return `<div class="aiagent-sdk-tp-item ${toggleClass}" data-name="${item.name}" data-type="${item.type}" title="${item.description || ''}">
+        <span class="aiagent-sdk-tp-icon">${icon}</span>
+        <span class="aiagent-sdk-tp-label">${item.label}</span>
+        ${controlHTML}
+      </div>`;
+    }).join('');
+
+    this._toolPanelEl.innerHTML = `<div class="aiagent-sdk-tp-title">工具面板</div>${items}`;
+
+    // 绑定事件
+    this._toolPanelEl.querySelectorAll('.aiagent-sdk-tp-item').forEach((el) => {
+      el.addEventListener('click', () => {
+        const name = (el as HTMLElement).dataset.name!;
+        const type = (el as HTMLElement).dataset.type!;
+        if (type === 'toggle') {
+          this._handleToggle(name);
+        } else {
+          this._handleAction(name);
+        }
+      });
+    });
+
+    // 同步展开状态
+    this._toolPanelEl.classList.toggle('aiagent-sdk-tool-panel-open', this._toolPanelOpen);
+  }
+
+  /** 仅更新 UI 状态(不重建 DOM) */
+  private _updateToolPanelUI(): void {
+    if (!this._toolPanelEl) return;
+    this._toolPanelEl.querySelectorAll('.aiagent-sdk-tp-item[data-type="toggle"]').forEach((el) => {
+      const name = (el as HTMLElement).dataset.name!;
+      const isOn = this._toolPanelStates.get(name) || false;
+      el.classList.toggle('aiagent-sdk-tp-on', isOn);
+      el.classList.toggle('aiagent-sdk-tp-off', !isOn);
+    });
+  }
+
+  /** 处理 toggle 点击 */
+  private _handleToggle(name: string): void {
+    const item = this._toolPanelItems.find((i) => i.name === name);
+    if (!item || item.type !== 'toggle') return;
+
+    const isOn = this._toolPanelStates.get(name) || false;
+    const newOn = !isOn;
+    this._toolPanelStates.set(name, newOn);
+    this._updateToolPanelUI();
+
+    // 判断是否自动管理
+    const isAutoManaged = !item.onToggle;
+
+    // 通知 agent 层
+    if (typeof this.handlers.onToolPanelToggle === 'function') {
+      this.handlers.onToolPanelToggle(name, newOn, isAutoManaged);
+    }
+  }
+
+  /** 处理 action 点击 */
+  private _handleAction(name: string): void {
+    const item = this._toolPanelItems.find((i) => i.name === name);
+    if (!item || item.type !== 'action') return;
+
+    // 点击反馈:短暂高亮
+    const el = this._toolPanelEl?.querySelector(`.aiagent-sdk-tp-item[data-name="${name}"]`);
+    if (el) {
+      el.classList.add('aiagent-sdk-tp-flash');
+      setTimeout(() => el.classList.remove('aiagent-sdk-tp-flash'), 300);
+    }
+
+    // 通知 agent 层
+    if (typeof this.handlers.onToolPanelAction === 'function') {
+      this.handlers.onToolPanelAction(name);
     }
   }
 }

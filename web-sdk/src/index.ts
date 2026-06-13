@@ -65,4 +65,5 @@ export type {
   RegisterToolsOptions,
   UnregisterToolsOptions,
   ListToolsOptions,
+  ToolPanelItem,
 } from './core/types';
