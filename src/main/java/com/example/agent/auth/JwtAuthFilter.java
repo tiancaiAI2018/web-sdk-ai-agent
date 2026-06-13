@@ -20,12 +20,12 @@ import java.net.URLDecoder;
 import java.util.Set;
 
 /**
- * 鉴权 + session namespace 校验。
+ * 鉴权 + session namespace 校验 + 管理端 scope 校验。
  *
  * 白名单精确路径:/auth/token(发 token)、/.well-known/jwks.json(取公钥)。
- * 前缀白名单:springdoc 资源(/swagger-ui、/v3/api-docs、/webjars)、
- *          静态文件(/sdk/、/examples/、/favicon.ico)。
+ * 前缀白名单:springdoc 资源、静态文件(/sdk/、/examples/、/admin/ 页面自身)。
  *
+ * /admin/** 需要 scope 以 "admin:" 开头。
  * /chat/** 额外校验 sessionId 必须以 `clientId:` 开头,防止跨 tenant 访问会话。
  */
 @Component
@@ -46,8 +46,12 @@ public class JwtAuthFilter implements WebFilter {
         "/sdk/",
         "/examples/",
         "/favicon.ico",
-        "/dict/"          // 字典查询接口,AI 工具 onCall 从浏览器直接调用(无 JWT)
+        "/dict/",          // 字典查询接口(服务端工具后端调用,不走浏览器)
+        "/admin/"          // 管理端静态页面(HTML/CSS/JS),API 接口在下面单独校验 scope
     };
+
+    /** 管理端 API 路径前缀(需要 admin scope) */
+    private static final String ADMIN_API_PREFIX = "/admin/api/";
 
     private static final String CHAT_PREFIX = "/chat/";
 
@@ -86,12 +90,17 @@ public class JwtAuthFilter implements WebFilter {
             return reject(exchange, "invalid_token", HttpStatus.UNAUTHORIZED);
         }
 
+        // /admin/api/** 需要 admin scope
+        if (path.startsWith(ADMIN_API_PREFIX)) {
+            if (verified.scope() == null || !verified.scope().startsWith("admin:")) {
+                audit.logAuthFail(path, ip);
+                return reject(exchange, "insufficient_scope", HttpStatus.FORBIDDEN);
+            }
+        }
+
         // /chat/** 强制 session namespace
         if (path.startsWith(CHAT_PREFIX)) {
-            // 浏览器 fetch 会把 sessionId 用 encodeURIComponent 编一遍,
-            // 所以 path 里是 %3A 而不是 :。先 URL-decode 再校验。
             String sessionId = URLDecoder.decode(path.substring(CHAT_PREFIX.length()), StandardCharsets.UTF_8);
-            // 截到下一个 / 或末尾(忽略 /stream 后缀)
             int slash = sessionId.indexOf('/');
             if (slash > 0) sessionId = sessionId.substring(0, slash);
             String nsPrefix = verified.clientId() + ":";

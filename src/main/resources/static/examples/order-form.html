@@ -38,7 +38,7 @@
 <body>
   <h1>复杂录单表单 + 字典级联查询</h1>
   <p>
-    演示 AI 通过 <span class="badge badge-dict">query_dict</span> 查字典编码 →
+    演示 AI 通过 <span class="badge badge-dict">query_dict</span>(服务端自动注入) 查字典编码 →
     <span class="badge badge-cascade">级联过滤</span> →
     <span class="badge badge-form">submit_order</span> 提交表单
   </p>
@@ -128,8 +128,8 @@
   <!-- 操作区 -->
   <div class="demo-section">
     <h3>操作面板</h3>
-    <p>工具按钮已集成到右下角 AI 浮窗的 🔧 工具面板中,点击浮窗头部的 🔧 按钮即可开关工具。</p>
-    <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;font-size:13px;">字典工具: 未注入 | 持久工具: submit_order</p>
+    <p>query_dict 已由服务端自动注入(AI 可直接调用)。工具面板中可开关 create_skin 和清空表单。</p>
+    <p id="status-line" style="margin-top:8px;font-weight:bold;color:#1d4ed8;font-size:13px;">服务端工具: query_dict(自动注入) | 前端工具: submit_order</p>
     <div id="log-area" class="log-area">等待操作...</div>
   </div>
 
@@ -308,6 +308,7 @@
         name: 'submit_order',
         description:
           '提交订单表单。所有编码字段必须通过 query_dict 工具查询获得,不要猜测编码。\n' +
+          'query_dict 已由服务端自动注入,可直接调用。\n' +
           '必填字段:customerName, customerPhone, cityCode, deviceTypeCode, deviceModelCode, quantity, unitPrice, warehouseCode, paymentCode。\n' +
           '可选字段:categoryCode, productCode, urgencyCode, notes。\n' +
           '⚠️ deviceModelCode 是级联字段,查询时必须传 parentCode(即 deviceTypeCode)。',
@@ -370,49 +371,11 @@
     AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
     log('内置 changeSkin 工具已注册(持久,所有会话生效)');
 
-    // ===== 2. 字典工具(含级联配置) =====
-    var dictInjected = false;
-
-    // 创建字典工具定义(供 registerToolPanel toggle 使用)
-    function createDictTool() {
-      var queryDictTool = AIAgent.dictTool({
-        endpoint: 'http://localhost:8080',
-        dictTypes: ['city', 'product', 'warehouse', 'category', 'urgency', 'payment', 'device_type', 'device_model'],
-        dictTypeLabels: {
-          city:         '城市(如北京、上海)',
-          product:      '商品/产品(如华为Mate60、iPhone15)',
-          warehouse:    '仓库(如北京中心仓、上海浦东仓)',
-          category:     '商品分类(如手机通讯、电脑办公)',
-          urgency:      '紧急程度(普通/加急/特急)',
-          payment:      '付款方式(银行转账/微信/支付宝等)',
-          device_type:  '设备类型(电脑/手机/平板/耳机/手表)',
-          device_model: '设备型号(依赖设备类型,查询时必须传 parentCode)'
-        },
-        cascades: [{
-          parentType: 'device_type',
-          childType: 'device_model',
-          parentLabel: '设备类型',
-          childLabel: '设备型号'
-        }]
-      });
-
-      // 包装 onCall:缓存编码→名称映射
-      var originalOnCall = queryDictTool.onCall;
-      queryDictTool.onCall = function (args) {
-        return Promise.resolve(originalOnCall(args)).then(function (result) {
-          if (result && result.ok && result.items) {
-            result.items.forEach(function (item) {
-              dictCache[args.dictType] = dictCache[args.dictType] || {};
-              dictCache[args.dictType][item.code] = item.name;
-            });
-            log('缓存字典: ' + args.dictType + (args.parentCode ? '(parent=' + args.parentCode + ')' : '') + ' → ' + result.items.length + '条');
-          }
-          return result;
-        });
-      };
-
-      return queryDictTool;
-    }
+    // ===== 2. 字典工具已由服务端自动注入 =====
+    // query_dict 通过 ServerAgentTool 在后端自动注册到每个 session,
+    // LLM 可直接调用,无需 SDK 端注册。字典数据从第三方数据源拉取,
+    // 经 FuzzyMatchProcessor 模糊匹配后返回给 LLM。
+    log('query_dict 已由服务端自动注入(无需 SDK 注册)');
 
     // ===== 3. 注册工具面板(SDK 浮窗内 🔧 按钮) =====
 
@@ -506,20 +469,6 @@
 
     agent.registerToolPanel([
       {
-        name: 'query_dict',
-        label: '字典查询',
-        icon: '📖',
-        description: '开启后 AI 可通过 query_dict 工具查询字典编码(含级联)',
-        type: 'toggle',
-        defaultOn: false,
-        tool: createDictTool(),
-        onToggle: function (isOn) {
-          dictInjected = isOn;
-          updateStatus();
-          log(isOn ? '已注入字典工具 query_dict(8种字典类型,含级联)' : '已移除字典工具 query_dict');
-        }
-      },
-      {
         name: 'create_skin',
         label: '创建皮肤',
         icon: '🎨',
@@ -558,8 +507,7 @@
 
     function updateStatus() {
       var el = document.getElementById('status-line');
-      el.textContent = '字典: ' + (dictInjected ? '已注入' : '未注入') +
-        ' | changeSkin: 开启 | 持久工具: submit_order';
+      el.textContent = '服务端工具: query_dict(自动注入) | changeSkin: 开启 | 前端工具: submit_order';
     }
 
     // ===== 3. 自动打开浮窗 =====

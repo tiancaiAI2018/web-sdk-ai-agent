@@ -7,6 +7,10 @@ import com.example.agent.extract.StreamBlockedException;
 import com.example.agent.extract.ToolRegistry;
 import com.example.agent.extract.ToolSchemaFactory;
 import com.example.agent.extract.ToolUseIdMismatchException;
+import com.example.agent.tool.ServerTool;
+import com.example.agent.tool.ServerAgentTool;
+import com.example.agent.tool.ServerToolExecutor;
+import com.example.agent.tool.ServerToolRegistry;
 import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.StreamOptions;
@@ -17,6 +21,7 @@ import io.agentscope.core.message.TextBlock;
 import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.agentscope.core.model.ChatModelBase;
+import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.session.Session;
 import io.agentscope.core.tool.Toolkit;
 import jakarta.annotation.PreDestroy;
@@ -27,6 +32,7 @@ import reactor.core.publisher.Flux;
 import reactor.core.publisher.Mono;
 
 import java.util.List;
+import java.util.Map;
 import java.util.concurrent.ConcurrentHashMap;
 import java.util.concurrent.atomic.AtomicBoolean;
 import java.util.concurrent.atomic.AtomicReference;
@@ -39,6 +45,10 @@ import java.util.regex.Pattern;
  *
  * <p>工具激活语义:stream 时传 {@code activeTools} 名字列表,从 {@link ToolRegistry}
  * 按 sid 查工具集,过滤后挂到新 Toolkit。
+ *
+ * <p>服务端工具:从 {@link ServerToolRegistry} 加载,自动注入到每个 session 的 Toolkit。
+ * LLM 调用服务端工具时,由 {@link ServerToolExecutor} 在后端直接执行,
+ * 不走 TOOL_SUSPENDED 流程,对 SDK 完全透明。
  */
 @Component
 public class SessionManager {
@@ -53,23 +63,21 @@ public class SessionManager {
     private final AgentProperties props;
     private final ToolRegistry toolRegistry;
     private final ToolSchemaFactory toolSchemaFactory;
+    private final ServerToolRegistry serverToolRegistry;
+    private final ServerToolExecutor serverToolExecutor;
     private final ConcurrentHashMap<String, ReActAgent> agents = new ConcurrentHashMap<>();
-    /**
-     * Sessions whose last stream ended in TOOL_SUSPENDED. The ReActAgent
-     * here is in suspended state (memory contains an unmatched ToolUseBlock)
-     * and must be reused for the next /tools/result call — rebuilding would
-     * trigger ReActAgent.doCall's "Pending tool calls exist without results"
-     * check on the next stream.
-     */
     private final ConcurrentHashMap<String, ReActAgent> suspendedAgents = new ConcurrentHashMap<>();
 
     public SessionManager(ChatModelBase model, Session session, AgentProperties props,
-                          ToolRegistry toolRegistry, ToolSchemaFactory toolSchemaFactory) {
+                          ToolRegistry toolRegistry, ToolSchemaFactory toolSchemaFactory,
+                          ServerToolRegistry serverToolRegistry, ServerToolExecutor serverToolExecutor) {
         this.model = model;
         this.session = session;
         this.props = props;
         this.toolRegistry = toolRegistry;
         this.toolSchemaFactory = toolSchemaFactory;
+        this.serverToolRegistry = serverToolRegistry;
+        this.serverToolExecutor = serverToolExecutor;
     }
 
     /**
@@ -97,11 +105,13 @@ public class SessionManager {
      * 旧 agent 仍在 map 里(下一次 getOrCreate 直接覆盖,GC 自动收)。
      */
     private ReActAgent build(String sessionId, List<String> activeTools) {
-        // 从 registry 拿工具(会刷 lastUsedAt;不存在的名字会抛 IllegalArgumentException)
+        // 从 registry 拿 SDK 工具
         List<RegisteredTool> tools = toolRegistry.get(sessionId, activeTools);
 
         Toolkit toolkit = null;
         String sysPrompt = props.getAgent().getSysPrompt();
+
+        // 注册 SDK 工具
         if (!tools.isEmpty()) {
             toolkit = new Toolkit();
             for (RegisteredTool t : tools) {
@@ -109,6 +119,21 @@ public class SessionManager {
             }
             String withTools = toolSchemaFactory.buildSysPromptWithTools(tools);
             if (withTools != null) sysPrompt = withTools;
+        }
+
+        // 注册服务端工具(通过 AgentTool 接口,LLM 调用时自动执行)
+        List<ServerTool> serverTools = serverToolRegistry.findAllEnabled();
+        if (!serverTools.isEmpty()) {
+            if (toolkit == null) toolkit = new Toolkit();
+            for (ServerTool st : serverTools) {
+                try {
+                    // 用 registerAgentTool 注册,LLM 调用时自动走 callAsync
+                    ServerAgentTool agentTool = new ServerAgentTool(st, serverToolExecutor);
+                    toolkit.registerAgentTool(agentTool);
+                } catch (Exception e) {
+                    log.warn("[SessionManager] failed to register server tool {}: {}", st.getName(), e.getMessage());
+                }
+            }
         }
 
         ReActAgent.Builder b = ReActAgent.builder()
@@ -121,8 +146,9 @@ public class SessionManager {
         ReActAgent agent = b.build();
 
         boolean loaded = agent.loadIfExists(session, sessionId);
-        agents.put(sessionId, agent);  // 覆盖旧引用,旧对象 GC
-        log.debug("Session {} built (loaded={}, tools={})", sessionId, loaded, activeTools);
+        agents.put(sessionId, agent);
+        log.debug("Session {} built (loaded={}, sdkTools={}, serverTools={})",
+            sessionId, loaded, activeTools, serverTools.size());
         return agent;
     }
 
@@ -150,14 +176,13 @@ public class SessionManager {
      * 流式 + 工具激活。tools 为空 = 纯聊天。
      *
      * <p>如果流末尾是 TOOL_SUSPENDED(schema-only 工具被 LLM 触发,等待外部
-     * SDK 回传结果),agent 移入 {@code suspendedAgents},<b>不</b> saveTo —— 否则
-     * JsonSession 会持久化未配对 ToolUseBlock,下次 loadIfExists 后
-     * ReActAgent.doCall 会抛 IllegalStateException。
+     * SDK 回传结果),agent 移入 {@code suspendedAgents},<b>不</b> saveTo。
+     *
+     * <p>服务端工具调用不会触发 TOOL_SUSPENDED,而是由 ServerToolExecutor 直接执行。
      */
     public Flux<Event> stream(String sessionId, String text, List<String> activeTools) {
         String safe = sanitize(sessionId);
 
-        // 挂起期间拒绝新 stream(SDK 应该先 POST /tools/result)
         if (suspendedAgents.containsKey(safe)) {
             return Flux.error(new StreamBlockedException(safe));
         }
@@ -170,11 +195,6 @@ public class SessionManager {
 
     /**
      * SDK 调 onCall 完成后,POST /tools/result 触发恢复。
-     * 必须用 <b>同一个</b> agent 实例(挂在 {@code suspendedAgents} 里),
-     * 用官方模式喂入 {@code Msg.builder().role(TOOL).content(ToolResultBlock...)}。
-     *
-     * <p>恢复后 LLM 可能再次调用工具(多步工具链),此时 agent 需要再次挂起,
-     * 逻辑跟 {@link #stream} 完全同源。
      */
     public Flux<Event> resume(String sessionId, String toolUseId, String resultText) {
         String safe = sanitize(sessionId);
@@ -212,7 +232,6 @@ public class SessionManager {
         log.debug("Session {} resuming with tool result ({} bytes)", safe,
             resultText == null ? 0 : resultText.length());
 
-        // resume 需要防 AgentScope 的 isRunning 竞态(stream 不需要,因为 stream 是全新 agent)
         Flux<Event> eventFlux = Flux.<Event>defer(() -> {
                     try {
                         return agent.stream(List.of(toolResult), StreamOptions.defaults());
@@ -231,13 +250,8 @@ public class SessionManager {
     /**
      * 挂起检测 —— stream 和 resume 共用。
      *
-     * <p>扫描每个 Event 的 ToolUseBlock,如果 LLM 调了非内部工具 → 挂起;
-     * 否则正常完成 → saveTo。逻辑完全同源,避免两边漂移。
-     *
-     * @param eventFlux  agent.stream() 产生的原始事件流
-     * @param safe       已 sanitize 的 sessionId
-     * @param agent      当前 agent 实例
-     * @param label      日志标签("stream" / "resume"),区分来源
+     * 服务端工具已通过 registerAgentTool 注册,LLM 调用时 AgentScope 自动执行 callAsync,
+     * 不会触发 TOOL_SUSPENDED。只有 SDK 工具(仅注册了 schema)才走挂起流程。
      */
     private Flux<Event> withSuspensionDetection(Flux<Event> eventFlux,
                                                  String safe,
@@ -249,10 +263,6 @@ public class SessionManager {
 
         return eventFlux
             .doOnNext(event -> {
-                // 扫描 ToolUseBlock:任何非内部工具调用 → 标记挂起
-                // 关键:putIfAbsent 必须在 doOnNext 阶段完成(不是 doOnComplete),
-                // 因为 SDK 可能在 SSE 帧到达后极快地 POST /tools/result,
-                // 此时 doOnComplete 可能还没跑完。
                 Msg m = event.getMessage();
                 if (m == null) return;
                 List<ToolUseBlock> tus;
@@ -266,6 +276,9 @@ public class SessionManager {
                     if (tu.getName() == null || tu.getName().startsWith("__")) continue;
                     pendingId.set(tu.getId());
                     pendingName.set(tu.getName());
+
+                    // SDK 工具:挂起等待 /tools/result
+                    // 服务端工具不会走到这里,因为已通过 registerAgentTool 注册,AgentScope 自动执行
                     if (suspendedAgents.putIfAbsent(safe, agent) == null) {
                         log.debug("Session {} [{}] suspended on tool {} ({}); awaiting /tools/result",
                             safe, label, tu.getName(), tu.getId());
@@ -279,7 +292,6 @@ public class SessionManager {
                     log.debug("Session {} [{}] complete (suspended on tool {} ({}))",
                         safe, label, pendingName.get(), pendingId.get());
                 } else {
-                    // 正常完成:移出挂起池(resume 场景) + 持久化
                     suspendedAgents.remove(safe);
                     agent.saveTo(session, safe);
                     log.debug("Session {} [{}] complete and saved", safe, label);
@@ -287,11 +299,9 @@ public class SessionManager {
             })
             .doOnError(err -> {
                 if (suspended.get()) {
-                    // 已挂起但流出错:保留在挂起池,SDK 仍可尝试 /tools/result
                     log.warn("Session {} [{}] error after suspend, agent stays suspended: {}",
                         safe, label, err.toString());
                 } else {
-                    // 未挂起就出错:evict,让下次从干净状态开始
                     suspendedAgents.remove(safe);
                     agents.remove(safe);
                     log.warn("Session {} [{}] error, evicted: {}", safe, label, err.toString());
@@ -299,30 +309,17 @@ public class SessionManager {
             });
     }
 
-    /**
-     * Cleaner 调:某 sid 的工具被 TTL 清掉时,同步清 agent(避免内存涨)。
-     * 不做 saveTo —— Cleaner 调时该 sid 通常已长时间无活动,saveTo 收益不大。
-     */
     public void evict(String sessionId) {
         ReActAgent old = agents.remove(sessionId);
         if (old != null) log.debug("Session {} evicted (TTL)", sessionId);
-        // 同步清挂起池(浏览器关掉、SDK 永远不会再调 /tools/result)
         ReActAgent suspended = suspendedAgents.remove(sessionId);
         if (suspended != null) log.debug("Session {} suspended agent evicted (TTL)", sessionId);
     }
 
-    /**
-     * SDK 调 /tools/abort:释放挂起中的 agent(用户取消 / SDK 重试失败后放弃 /
-     * 页面关闭)。不 saveTo —— memory 含半配对 ToolUseBlock,持久化反而会让下次
-     * loadIfExists 触发 ReActAgent.doCall 的 IllegalStateException。
-     *
-     * @return 此前是否真在挂起池(false = idle,abort 是幂等 no-op)
-     */
     public boolean abort(String sessionId) {
         String safe = sanitize(sessionId);
         ReActAgent suspended = suspendedAgents.remove(safe);
         if (suspended != null) {
-            // 同步清 agents map 里那条引用,避免内存涨
             agents.remove(safe);
             log.debug("Session {} aborted (was suspended)", safe);
             return true;
@@ -332,7 +329,6 @@ public class SessionManager {
 
     @PreDestroy
     void shutdown() {
-        // Best-effort flush of every active session.
         agents.forEach((id, agent) -> {
             try {
                 agent.saveTo(session, id);

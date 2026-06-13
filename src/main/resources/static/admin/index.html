@@ -1,0 +1,115 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>AI 平台管理端</title>
+    <link rel="stylesheet" href="css/admin.css">
+</head>
+<body>
+    <!-- 侧边栏 -->
+    <nav class="sidebar" id="sidebar">
+        <div class="sidebar-header">
+            <h2>AI 平台管理</h2>
+        </div>
+        <ul class="nav-list">
+            <li class="nav-item active" data-page="apps">
+                <span class="nav-icon">📱</span> 应用管理
+            </li>
+            <li class="nav-item" data-page="datasources">
+                <span class="nav-icon">🔌</span> 数据源管理
+            </li>
+            <li class="nav-item" data-page="tools">
+                <span class="nav-icon">🔧</span> 服务端工具
+            </li>
+            <li class="nav-item" data-page="audit">
+                <span class="nav-icon">📋</span> 审计日志
+            </li>
+        </ul>
+    </nav>
+
+    <!-- 主内容区 -->
+    <main class="main-content">
+        <header class="top-bar">
+            <h3 id="pageTitle">应用管理</h3>
+            <div class="user-info">
+                <span id="userScope"></span>
+                <button class="btn-sm btn-outline" onclick="AdminAPI.logout()">退出</button>
+            </div>
+        </header>
+        <div class="content-area" id="contentArea">
+            <!-- 动态加载各模块内容 -->
+        </div>
+    </main>
+
+    <!-- 模态框 -->
+    <div class="modal-overlay" id="modalOverlay" style="display:none">
+        <div class="modal-card" id="modalCard">
+            <div class="modal-header">
+                <h3 id="modalTitle">标题</h3>
+                <button class="btn-close" onclick="closeModal()">&times;</button>
+            </div>
+            <div class="modal-body" id="modalBody"></div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/apps.js"></script>
+    <script src="js/datasources.js"></script>
+    <script src="js/tools.js"></script>
+    <script src="js/audit.js"></script>
+    <script>
+        // 登录检查
+        if (!AdminAPI.getToken()) {
+            window.location.href = '/admin/login.html';
+        }
+
+        // 显示 scope
+        const scope = AdminAPI.getScope() || '';
+        document.getElementById('userScope').textContent =
+            scope.startsWith('admin:') ? '管理员 (' + scope.split(':')[1] + ')' : scope;
+
+        // 页面路由
+        const pages = { apps, datasources, tools, audit };
+        let currentPage = 'apps';
+
+        document.querySelectorAll('.nav-item').forEach(item => {
+            item.addEventListener('click', () => {
+                const page = item.dataset.page;
+                switchPage(page);
+            });
+        });
+
+        function switchPage(page) {
+            currentPage = page;
+            document.querySelectorAll('.nav-item').forEach(i => i.classList.remove('active'));
+            document.querySelector(`[data-page="${page}"]`).classList.add('active');
+            const pageObj = pages[page];
+            document.getElementById('pageTitle').textContent = pageObj.title;
+            pageObj.render(document.getElementById('contentArea'));
+        }
+
+        // 模态框
+        function openModal(title, bodyHtml) {
+            document.getElementById('modalTitle').textContent = title;
+            document.getElementById('modalBody').innerHTML = bodyHtml;
+            document.getElementById('modalOverlay').style.display = 'flex';
+        }
+        function closeModal() {
+            document.getElementById('modalOverlay').style.display = 'none';
+        }
+
+        // 通用 toast
+        function showToast(msg, type = 'info') {
+            const toast = document.createElement('div');
+            toast.className = 'toast toast-' + type;
+            toast.textContent = msg;
+            document.body.appendChild(toast);
+            setTimeout(() => toast.remove(), 3000);
+        }
+
+        // 初始加载
+        switchPage('apps');
+    </script>
+</body>
+</html>
