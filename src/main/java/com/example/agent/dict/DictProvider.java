@@ -50,4 +50,52 @@ public interface DictProvider {
      * @return 该类型的全部条目
      */
     List<DictItem> listAll(String dictType);
+
+    /**
+     * 按父级编码过滤查询(级联字典场景)。
+     *
+     * <p>返回 parent 字段等于 parentCode 的全部条目。
+     * 非级联字典调用时返回空列表。
+     *
+     * @param dictType   字典类型
+     * @param parentCode 父级编码
+     * @return 匹配的条目列表
+     */
+    default List<DictItem> listByParent(String dictType, String parentCode) {
+        return List.of();
+    }
+
+    /**
+     * 粗筛 + 父级过滤(级联字典的模糊查询)。
+     *
+     * <p>先按 parentCode 过滤,再对结果做关键词粗筛。
+     * 默认实现:先 listByParent,再内存 search。
+     *
+     * @param dictType   字典类型
+     * @param keyword    搜索关键词
+     * @param parentCode 父级编码(可选,null 表示不过滤)
+     * @param limit      建议返回条数上限
+     * @return 候选列表
+     */
+    default List<DictItem> searchWithParent(String dictType, String keyword, String parentCode, int limit) {
+        if (parentCode == null || parentCode.isBlank()) {
+            return search(dictType, keyword, limit);
+        }
+        // 先按父级过滤,再在子集中做关键词匹配
+        List<DictItem> children = listByParent(dictType, parentCode);
+        if (keyword == null || keyword.isBlank()) {
+            return children.size() <= limit ? children : children.subList(0, limit);
+        }
+        String kw = keyword.trim();
+        List<DictItem> result = new java.util.ArrayList<>();
+        for (DictItem item : children) {
+            if (item.name().contains(kw)) { result.add(item); continue; }
+            if (item.aliases() != null) {
+                for (String alias : item.aliases()) {
+                    if (alias.contains(kw)) { result.add(item); break; }
+                }
+            }
+        }
+        return result.size() <= limit ? result : result.subList(0, limit);
+    }
 }

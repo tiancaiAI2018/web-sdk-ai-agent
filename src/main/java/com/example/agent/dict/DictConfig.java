@@ -8,12 +8,12 @@ import org.springframework.context.annotation.Configuration;
 import java.util.List;
 
 /**
- * 字典系统配置 —— 初始化 DictService / DictMatcher / StaticDictProvider。
+ * 字典系统配置 —— 初始化 DictService / DictMatcher / CascadeRegistry / StaticDictProvider。
  *
  * <p>生产环境:
  * <ul>
  *   <li>替换 StaticDictProvider 为 JdbcDictProvider / RedisDictProvider</li>
- *   <li>DictService 和 DictMatcher 无需任何改动</li>
+ *   <li>DictService / DictMatcher / CascadeRegistry 无需任何改动</li>
  * </ul>
  */
 @Configuration
@@ -21,18 +21,25 @@ public class DictConfig {
 
     private static final Logger log = LoggerFactory.getLogger(DictConfig.class);
 
-    /** DictMatcher 是无状态纯函数,单例安全 */
     @Bean
     public DictMatcher dictMatcher() {
         return new DictMatcher();
     }
 
-    /** DictService 编排层 */
     @Bean
-    public DictService dictService(DictMatcher matcher) {
-        DictService service = new DictService(matcher);
+    public CascadeRegistry cascadeRegistry() {
+        CascadeRegistry reg = new CascadeRegistry();
+        // 注册级联关系:设备类型 → 设备型号
+        reg.registerAll(List.of(
+            new CascadeLink("device_type", "device_model")
+        ));
+        return reg;
+    }
 
-        // 注册 StaticDictProvider(开发/测试用)
+    @Bean
+    public DictService dictService(DictMatcher matcher, CascadeRegistry cascadeRegistry) {
+        DictService service = new DictService(matcher, cascadeRegistry);
+
         StaticDictProvider staticProvider = new StaticDictProvider();
         seedCityDict(staticProvider);
         seedProductDict(staticProvider);
@@ -40,17 +47,20 @@ public class DictConfig {
         seedCategoryDict(staticProvider);
         seedUrgencyDict(staticProvider);
         seedPaymentDict(staticProvider);
+        // 级联字典:设备类型(父) + 设备型号(子)
+        seedDeviceTypeDict(staticProvider);
+        seedDeviceModelDict(staticProvider);
         service.registerProvider(staticProvider);
 
-        log.info("[DictConfig] StaticDictProvider loaded: types={}", staticProvider.supportedTypes());
+        log.info("[DictConfig] StaticDictProvider loaded: types={}, cascades={}",
+            staticProvider.supportedTypes(), cascadeRegistry.all());
         return service;
     }
 
     // ====================================================================
-    // 模拟数据(生产环境从数据库/Redis 加载)
+    // 模拟数据
     // ====================================================================
 
-    /** 城市字典:含别名,支持"北京市"→"北京"匹配 */
     private void seedCityDict(StaticDictProvider p) {
         p.register("city", List.of(
             new DictItem("0001", "北京",   List.of("北京市", "京", "BJ")),
@@ -86,7 +96,6 @@ public class DictConfig {
         ));
     }
 
-    /** 产品字典:含别名,支持"华为"→"华为Mate60"匹配 */
     private void seedProductDict(StaticDictProvider p) {
         p.register("product", List.of(
             new DictItem("P001", "iPhone 15 Pro",     List.of("苹果15Pro", "iPhone15Pro", "苹果15")),
@@ -112,7 +121,6 @@ public class DictConfig {
         ));
     }
 
-    /** 仓库字典 */
     private void seedWarehouseDict(StaticDictProvider p) {
         p.register("warehouse", List.of(
             new DictItem("WH01", "北京中心仓",   List.of("北京仓", "中心仓")),
@@ -128,7 +136,6 @@ public class DictConfig {
         ));
     }
 
-    /** 商品分类字典 */
     private void seedCategoryDict(StaticDictProvider p) {
         p.register("category", List.of(
             new DictItem("C01", "手机通讯",   List.of("手机", "电话")),
@@ -141,7 +148,6 @@ public class DictConfig {
         ));
     }
 
-    /** 紧急程度字典(小字典,适合 enum 内嵌) */
     private void seedUrgencyDict(StaticDictProvider p) {
         p.register("urgency", List.of(
             new DictItem("U01", "普通",   List.of("正常", "一般")),
@@ -150,7 +156,6 @@ public class DictConfig {
         ));
     }
 
-    /** 付款方式字典 */
     private void seedPaymentDict(StaticDictProvider p) {
         p.register("payment", List.of(
             new DictItem("PAY01", "银行转账",   List.of("转账", "对公转账")),
@@ -158,6 +163,56 @@ public class DictConfig {
             new DictItem("PAY03", "支付宝",     List.of("阿里支付")),
             new DictItem("PAY04", "现金",       List.of("现结")),
             new DictItem("PAY05", "月结",       List.of("月结30天", "账期"))
+        ));
+    }
+
+    // ====================================================================
+    // 级联字典:设备类型(父) + 设备型号(子)
+    // 演示同名不同物:小米14-电脑 vs 小米14-手机
+    // ====================================================================
+
+    /** 设备类型(父字典) */
+    private void seedDeviceTypeDict(StaticDictProvider p) {
+        p.register("device_type", List.of(
+            new DictItem("DT01", "电脑",   List.of("笔记本", "台式机", "PC")),
+            new DictItem("DT02", "手机",   List.of("电话", "移动设备", "Smartphone")),
+            new DictItem("DT03", "平板",   List.of("Pad", "Tablet")),
+            new DictItem("DT04", "耳机",   List.of("Headphone", "耳麦")),
+            new DictItem("DT05", "手表",   List.of("Watch", "智能手表"))
+        ));
+    }
+
+    /** 设备型号(子字典,parent 指向 device_type 的 code) */
+    private void seedDeviceModelDict(StaticDictProvider p) {
+        p.register("device_model", List.of(
+            // 电脑下的型号(parent=DT01)
+            new DictItem("DM0101", "小米14 电脑版",    "DT01", List.of("小米14笔记本", "小米笔记本14")),
+            new DictItem("DM0102", "MacBook Pro 14",   "DT01", List.of("苹果笔记本", "MacBookPro14")),
+            new DictItem("DM0103", "ThinkPad X1",      "DT01", List.of("联想X1", "ThinkPad")),
+            new DictItem("DM0104", "Surface Pro 9",    "DT01", List.of("微软平板电脑", "SurfacePro9")),
+            new DictItem("DM0105", "华为MateBook X",   "DT01", List.of("华为笔记本", "MateBook")),
+
+            // 手机下的型号(parent=DT02)
+            new DictItem("DM0201", "小米14",           "DT02", List.of("小米14手机", "Mi14")),
+            new DictItem("DM0202", "iPhone 15 Pro",    "DT02", List.of("苹果15Pro", "iPhone15Pro")),
+            new DictItem("DM0203", "华为Mate60 Pro",   "DT02", List.of("华为Mate60Pro", "Mate60Pro")),
+            new DictItem("DM0204", "三星Galaxy S24",   "DT02", List.of("三星S24", "GalaxyS24")),
+            new DictItem("DM0205", "OPPO Find X7",     "DT02", List.of("FindX7", "oppo x7")),
+
+            // 平板下的型号(parent=DT03)
+            new DictItem("DM0301", "iPad Pro 12.9",    "DT03", List.of("苹果平板", "iPadPro")),
+            new DictItem("DM0302", "小米平板6",        "DT03", List.of("小米Pad6", "MiPad6")),
+            new DictItem("DM0303", "华为MatePad Pro",  "DT03", List.of("华为平板", "MatePad")),
+
+            // 耳机下的型号(parent=DT04)
+            new DictItem("DM0401", "AirPods Pro 2",    "DT04", List.of("苹果耳机", "AirPodsPro2")),
+            new DictItem("DM0402", "Sony WH-1000XM5",  "DT04", List.of("索尼耳机", "索尼降噪")),
+            new DictItem("DM0403", "小米Buds4 Pro",    "DT04", List.of("小米耳机", "MiBuds4Pro")),
+
+            // 手表下的型号(parent=DT05)
+            new DictItem("DM0501", "Apple Watch Ultra2", "DT05", List.of("苹果手表", "AppleWatch")),
+            new DictItem("DM0502", "华为Watch GT4",      "DT05", List.of("华为手表", "WatchGT4")),
+            new DictItem("DM0503", "小米Watch S3",       "DT05", List.of("小米手表", "MiWatchS3"))
         ));
     }
 }

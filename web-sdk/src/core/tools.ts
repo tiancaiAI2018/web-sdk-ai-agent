@@ -261,6 +261,18 @@ export interface DictToolOptions {
   dictTypes: string[];
   /** 每种字典类型的中文描述,用于 tool description */
   dictTypeLabels?: Record<string, string>;
+  /**
+   * 级联关系列表。每项定义一组父子联动关系。
+   * AI 工具的 description 会自动注入级联提示,
+   * 告诉 AI "查子字典前必须先确定父字典的编码"。
+   * 示例: [{ parentType: 'device_type', childType: 'device_model' }]
+   */
+  cascades?: Array<{
+    parentType: string;
+    childType: string;
+    parentLabel?: string;
+    childLabel?: string;
+  }>;
 }
 
 /**
@@ -287,6 +299,7 @@ export interface DictToolOptions {
 export function dictTool(opts: DictToolOptions): ToolDef {
   const types = opts.dictTypes || [];
   const labels = opts.dictTypeLabels || {};
+  const cascades = opts.cascades || [];
 
   // 拼接字典类型描述
   const typeDesc = types
@@ -296,16 +309,27 @@ export function dictTool(opts: DictToolOptions): ToolDef {
     })
     .join('\n');
 
+  // 拼接级联提示:告诉 AI 查子字典前必须先查父字典
+  let cascadeDesc = '';
+  if (cascades.length > 0) {
+    cascadeDesc =
+      '\n\n级联规则:\n' +
+      cascades
+        .map((c) => {
+          const pLabel = c.parentLabel || labels[c.parentType] || c.parentType;
+          const cLabel = c.childLabel || labels[c.childType] || c.childType;
+          return `  - ${c.childType}(${cLabel}) 需先查 ${c.parentType}(${pLabel}) 获得编码,再通过parentCode传入`;
+        })
+        .join('\n');
+  }
+
   return {
     name: 'query_dict',
     description:
-      `查询字典数据,将中文名转换为系统编码。\n` +
-      `在调用 submit_form 等需要编码的接口前,先用本工具查询对应编码。\n` +
-      `可用字典类型:\n${typeDesc}\n` +
-      `返回结果包含 matchType(匹配方式)和 score(置信度):\n` +
-      `  - exact: 精确匹配(100%确定)\n` +
-      `  - contains/suffix_stripped: 近似匹配(大概率对,可确认)\n` +
-      `  - bigram/edit_distance: 模糊匹配(需跟用户确认)`,
+      `查字典,将中文名转系统编码。需编码时先调本工具。\n` +
+      `字典类型:\n${typeDesc}\n` +
+      `匹配方式:exact(精确)/contains(近似)/bigram(模糊,需确认)` +
+      cascadeDesc,
     parameters: {
       type: 'object',
       properties: {
@@ -318,6 +342,11 @@ export function dictTool(opts: DictToolOptions): ToolDef {
           type: 'string',
           description: '搜索关键词,如城市名"北京"、产品名"华为"',
         },
+        parentCode: {
+          type: 'string',
+          description:
+            '父级编码(级联字典必填)。查子字典时传父字典编码限定范围,如查设备型号时传设备类型编码。',
+        },
         limit: {
           type: 'number',
           description: '返回条数上限,默认5',
@@ -329,15 +358,16 @@ export function dictTool(opts: DictToolOptions): ToolDef {
     onCall: async (args) => {
       const dictType = (args as { dictType?: string }).dictType || '';
       const keyword = (args as { keyword?: string }).keyword || '';
+      const parentCode = (args as { parentCode?: string }).parentCode || '';
       const limit = (args as { limit?: number }).limit || 5;
 
       if (!dictType || !keyword) {
         return { ok: false, error: 'dictType and keyword are required' };
       }
 
-      // 确定请求地址
+      // 确定请求地址(带 parentCode)
       const baseUrl = opts.endpoint || '';
-      const url =
+      let url =
         baseUrl +
         '/dict/' +
         encodeURIComponent(dictType) +
@@ -345,6 +375,9 @@ export function dictTool(opts: DictToolOptions): ToolDef {
         encodeURIComponent(keyword) +
         '&limit=' +
         limit;
+      if (parentCode) {
+        url += '&parentCode=' + encodeURIComponent(parentCode);
+      }
 
       try {
         const resp = await fetch(url, {
@@ -362,6 +395,7 @@ export function dictTool(opts: DictToolOptions): ToolDef {
           name: string;
           matchType: string;
           score: number;
+          parent?: string;
         }>;
 
         if (!items || items.length === 0) {
@@ -369,7 +403,8 @@ export function dictTool(opts: DictToolOptions): ToolDef {
             ok: true,
             items: [],
             message:
-              '未找到匹配项。请尝试:更换关键词、使用全称或简称、检查字典类型是否正确。',
+              '未找到匹配项。请尝试:更换关键词、使用全称或简称、检查字典类型是否正确。' +
+              (parentCode ? ' 当前 parentCode=' + parentCode : ''),
           };
         }
 
@@ -385,13 +420,20 @@ export function dictTool(opts: DictToolOptions): ToolDef {
             )
               tag = '[近似]';
             else tag = '[模糊,请确认]';
-            return `${i.code} → ${i.name} ${tag}`;
+            const parentInfo = i.parent ? ` (父级:${i.parent})` : '';
+            return `${i.code} → ${i.name}${parentInfo} ${tag}`;
           })
           .join('\n');
 
         return {
           ok: true,
-          items: items.map((i) => ({ code: i.code, name: i.name, matchType: i.matchType, score: i.score })),
+          items: items.map((i) => ({
+            code: i.code,
+            name: i.name,
+            matchType: i.matchType,
+            score: i.score,
+            parent: i.parent,
+          })),
           formatted,
           message: formatted,
         };

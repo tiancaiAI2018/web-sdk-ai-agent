@@ -73,4 +73,13 @@ public class StaticDictProvider implements DictProvider {
     public List<DictItem> listAll(String dictType) {
         return data.getOrDefault(dictType, List.of());
     }
+
+    @Override
+    public List<DictItem> listByParent(String dictType, String parentCode) {
+        List<DictItem> items = data.get(dictType);
+        if (items == null || parentCode == null) return List.of();
+        return items.stream()
+            .filter(i -> parentCode.equals(i.parent()))
+            .toList();
+    }
 }

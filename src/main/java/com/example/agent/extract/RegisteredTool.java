@@ -32,8 +32,8 @@ public record RegisteredTool(
     /** JSON Schema 顶层允许的 type(本项目只支持 object 类型工具)。 */
     public static final Set<String> ALLOWED_ROOT_TYPES = Set.of("object");
 
-    /** description 最大长度。 */
-    public static final int MAX_DESCRIPTION_LENGTH = 500;
+    /** description 最大长度(字典级联工具需要较长的描述来指导 AI 正确传参)。 */
+    public static final int MAX_DESCRIPTION_LENGTH = 1500;
 
     /**
      * 紧凑 record,只含网络传输/校验需要的字段(不含时间戳)。
