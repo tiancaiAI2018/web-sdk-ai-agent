@@ -28,8 +28,15 @@ export {
   changeSkinTool,
   dictTool,
   pageErrorsTool,
+  validateTool,
+  runValidation,
   type ToolCtx,
   type DictToolOptions,
+  type ValidationRule,
+  type ValidationResult,
+  type ValidationError,
+  type ValidationSeverity,
+  type ValidateToolOptions,
 } from './core/tools';
 export { Widget } from './ui/widget';
 export { applyTheme, DEFAULT_THEME } from './ui/theme';

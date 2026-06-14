@@ -29,19 +29,36 @@
   </p>
 
   <div class="form-area">
-    <h3>订单录入区(SDK 智能录单会把字段填到这里)</h3>
+    <h3>订单录入区</h3>
+    <p style="font-size:13px;color:#6b7280;margin:0 0 10px;">AI 助手会通过 submit_form 工具把字段填到这里。填完后点"提交订单"发到第三方系统。</p>
     <div class="form-grid">
       <label>订单号</label>   <input id="f-orderId"       data-field="orderId" />
       <label>客户姓名</label> <input id="f-customerName"  data-field="customerName" />
       <label>联系电话</label> <input id="f-customerPhone" data-field="customerPhone" />
       <label>商品清单</label> <input id="f-items"         data-field="items" />
       <label>总金额</label>   <input id="f-totalAmount"   data-field="totalAmount" />
+      <label>加急级别</label> <input id="f-urgencyCode"   data-field="urgencyCode" placeholder="normal / urgent / critical" />
+      <label>加急原因</label> <input id="f-urgencyReason" data-field="urgencyReason" />
+      <label>仓库</label>     <input id="f-warehouse"     data-field="warehouse" placeholder="BJ / SH / GZ" />
+      <label>物流方式</label> <input id="f-shippingMethod" data-field="shippingMethod" />
+      <label>审批码</label>   <input id="f-approvalCode"  data-field="approvalCode" />
       <label>备注</label>     <input id="f-notes"         data-field="notes" />
+    </div>
+    <div style="margin-top:12px; display:flex; gap:8px; align-items:center;">
+      <button id="btn-submit-order" style="padding:10px 28px; background:#3b82f6; color:#fff; border:none; border-radius:6px; font-size:15px; font-weight:600; cursor:pointer;">提交订单</button>
+      <button id="btn-clear-form" style="padding:10px 20px; background:#fff; color:#64748b; border:1px solid #d1d5db; border-radius:6px; cursor:pointer;">清空表单</button>
+      <span id="order-status" style="font-size:13px; color:#6b7280;"></span>
     </div>
   </div>
 
-  <!-- v5 工具模型演示区 -->
-  <div class="demo-section">
+  <!-- ================================================================ -->
+  <!-- 开发者测试区(可折叠)                                              -->
+  <!-- ================================================================ -->
+  <details style="margin-top:24px;">
+    <summary style="cursor:pointer;font-size:14px;color:#6b7280;padding:8px 0;">开发者测试面板 — 页面感知 & 工具系统详细测试按钮</summary>
+
+    <!-- v5 工具模型演示区 -->
+    <div class="demo-section">
     <h3>v5 通用工具模型演示</h3>
     <p><strong>持久工具</strong>:init 时传入的 submit_form + 内置 change_skin。每个新会话自动注入,不会丢失。</p>
     <p><strong>临时工具</strong>:点击下方按钮追加,仅当前会话生效。点"新会话"后临时工具自动失效。</p>
@@ -125,9 +142,42 @@
     <p style="font-size:12px; color:#6b7280;">点击后会自动触发: fetch 500 + JS Error + DOM Toast,并自动打开浮窗。你只需输入任意消息发送,观察 AI 回复。</p>
   </div>
 
-  <h3>对话触发</h3>
-  <button id="trigger-chat">点我打开浮窗开始对话</button>
-  <p class="meta" style="color:#6b7280;font-size:13px">打开浮窗后,直接跟 AI 对话即可。submit_form 是持久工具,模型会在对话中自动调用来回填表单。</p>
+  <!-- ================================================================ -->
+  <!-- 表单校验引擎全面测试区                                              -->
+  <!-- ================================================================ -->
+  <div class="demo-section" style="border-left-color:#eab308; background:#fefce8;">
+    <h3 style="color:#a16207;">6. 表单校验引擎 (validateTool)</h3>
+    <p>纯前端执行,AI 在 submit_form 前调 validate_form 主动校验。支持 5 种规则类型 + error/warning 双严重级。</p>
+    <p style="font-size:12px;color:#6b7280;">每个按钮会用预设 formData 直接调 AIAgent.validateTool 工厂产出的 onCall,在日志区显示结果。</p>
+
+    <p><strong>基础校验</strong></p>
+    <button id="btn-v-empty">空表单 (触发 4 条 required)</button>
+    <button id="btn-v-phone-bad">手机格式错 (123)</button>
+    <button id="btn-v-amount-neg">金额为负数</button>
+    <button id="btn-v-enum-bad">加急级别非法 (super)</button>
+
+    <p style="margin-top:8px;"><strong>跨字段依赖</strong></p>
+    <button id="btn-v-urgent-no-reason">加急订单缺加急原因</button>
+    <button id="btn-v-big-no-approval">大额订单缺审批码</button>
+    <button id="btn-v-bj-no-shipping">北京仓缺物流方式</button>
+
+    <p style="margin-top:8px;"><strong>警告级 / 完整通过</strong></p>
+    <button id="btn-v-warning">校验通过但带警告 (大额无备注)</button>
+    <button id="btn-v-pass">完整合法表单</button>
+
+    <p style="margin-top:8px;"><strong>端到端</strong></p>
+    <button id="btn-v-e2e" style="background:#fef3c7; border-color:#fbbf24;">
+      打开浮窗,告诉 AI "帮我录一单加急,北京仓,15万"
+    </button>
+    <p style="font-size:12px; color:#6b7280;">AI 会自动调 validate_form → 收到错误列表 → 追问你补字段 → 重试 → submit_form。</p>
+  </div>
+  </details>
+
+  <div style="margin-top:16px;">
+    <h3 style="margin:0 0 8px;">开始对话</h3>
+    <p style="font-size:14px;color:#374151;margin:0 0 8px;">打开浮窗 → 告诉 AI 你要录什么单 → AI 填表单 → 点提交 → 如果报错,问 AI 怎么回事。</p>
+    <button id="trigger-chat" style="padding:12px 32px; background:linear-gradient(135deg,#5eead4,#a78bfa); color:#050505; border:none; border-radius:8px; font-size:16px; font-weight:700; cursor:pointer; box-shadow:0 4px 14px rgba(94,234,212,0.3);">打开 AI 浮窗</button>
+  </div>
 
   <script src="http://localhost:8080/sdk/ai-agent-sdk.js"></script>
   <script>
@@ -140,6 +190,68 @@
     // ===== 1. 浮窗 SDK 初始化 =====
     // v5: persistentTools 是持久工具,本地缓存,新会话首次发消息时自动注册到后端
     var changeskinEnabled = true;
+
+    // ===== 表单校验工具:定义规则 =====
+    // validateTool 工厂:纯前端执行,AI 在 submit_form 之前主动调用
+    var orderValidateTool = AIAgent.validateTool({
+      rules: [
+        // --- 基础校验 ---
+        { id: 'r-order',     required: 'orderId',       message: '订单编号不能为空' },
+        { id: 'r-customer',  required: 'customerName',  message: '客户姓名不能为空' },
+        { id: 'r-phone',     required: 'customerPhone', message: '联系电话不能为空' },
+        { id: 'r-phone-fmt', pattern: {
+            field: 'customerPhone',
+            regex: /^1[3-9]\d{9}$/,
+            message: '手机号必须是 1 开头 + 10 位数字'
+        }},
+        { id: 'r-items',     required: 'items',          message: '商品清单不能为空' },
+        { id: 'r-amount-req',required: 'totalAmount',    message: '总金额不能为空' },
+        { id: 'r-amount-min',range: {
+            field: 'totalAmount', min: 0.01,
+            message: '总金额必须大于 0'
+        }},
+
+        // --- 枚举校验 ---
+        { id: 'r-urgency-enum', enum: {
+            field: 'urgencyCode',
+            values: ['', 'normal', 'urgent', 'critical'],
+            message: '加急级别只能是 normal / urgent / critical(或不填)'
+        }},
+
+        // --- 跨字段依赖 ---
+        { id: 'r-urgency-reason', message: '加急/特急订单必须填写加急原因',
+          condition: {
+            when: function (f) { return f.urgencyCode === 'urgent' || f.urgencyCode === 'critical'; },
+            requires: ['urgencyReason']
+          }},
+        { id: 'r-approval', message: '金额超过 10 万需要审批码',
+          condition: {
+            when: function (f) { return Number(f.totalAmount) > 100000; },
+            requires: ['approvalCode']
+          }},
+        { id: 'r-shipping', message: '北京仓库的订单必须指定物流方式',
+          condition: {
+            when: function (f) { return f.warehouse === 'BJ'; },
+            requires: ['shippingMethod']
+          }},
+
+        // --- 警告级(不阻断)---
+        { id: 'w-notes', severity: 'warning', message: '大额订单建议填写备注,便于后续追溯',
+          condition: {
+            when: function (f) { return Number(f.totalAmount) > 50000 && !f.notes; },
+            check: function () { return false; }
+          }}
+      ],
+      fieldLabels: {
+        orderId: '订单编号', customerName: '客户姓名', customerPhone: '联系电话',
+        items: '商品清单', totalAmount: '总金额',
+        urgencyCode: '加急级别', urgencyReason: '加急原因',
+        warehouse: '仓库', shippingMethod: '物流方式',
+        approvalCode: '审批码', notes: '备注'
+      },
+      descriptionSuffix: '本工具用于订单录入场景,在 submit_form 之前必须调用。'
+    });
+
     var agent = AIAgent.init({
       endpoint: 'http://localhost:8080',
       getAccessToken: async function () {
@@ -149,7 +261,7 @@
       },
       title: 'AI 助手',
       subtitle: '点我开始聊天',
-      welcomeMessage: '你好!我是 AI 助手(v5 通用工具模型)。submit_form 是持久工具,每个新会话都能用。你也可以点下方按钮追加临时工具。',
+      welcomeMessage: '你好!我可以帮你录订单。试试说"帮我录一单,5台小米14手机,客户张三,手机号13800138000",我会自动填好表单。填完后点"提交订单"按钮提交到系统。如果提交出错,直接问我"怎么回事"!',
       placeholder: '输入消息,Enter 发送,Shift+Enter 换行',
       theme: 'light',
       position: 'bottom-right',
@@ -157,18 +269,23 @@
       // v5:持久工具,本地缓存,新会话自动注入
       persistentTools: [{
         name: 'submit_form',
-        description: 'Submit collected order fields. Call only when all required fields are confirmed.',
+        description: 'Submit collected order fields. Call only when all required fields are confirmed AND validate_form has returned valid=true.',
         parameters: {
           type: 'object',
           properties: {
-            orderId:       { type: 'string',  description: '订单编号' },
-            customerName:  { type: 'string',  description: '客户全名' },
-            customerPhone: { type: 'string',  description: '11 位手机号' },
-            items:         { type: 'string',  description: '商品清单,简短文字描述' },
-            totalAmount:   { type: 'number',  description: '订单总金额,数字,单位元' },
-            notes:         { type: 'string',  description: '其他备注' }
+            orderId:        { type: 'string',  description: '订单编号' },
+            customerName:   { type: 'string',  description: '客户全名' },
+            customerPhone:  { type: 'string',  description: '11 位手机号' },
+            items:          { type: 'string',  description: '商品清单,简短文字描述' },
+            totalAmount:    { type: 'number',  description: '订单总金额,数字,单位元' },
+            urgencyCode:    { type: 'string',  description: '加急级别: normal / urgent / critical' },
+            urgencyReason:  { type: 'string',  description: '加急原因(加急/特急必填)' },
+            warehouse:      { type: 'string',  description: '发货仓库: BJ / SH / GZ' },
+            shippingMethod: { type: 'string',  description: '物流方式(北京仓必填)' },
+            approvalCode:   { type: 'string',  description: '审批码(金额超10万必填)' },
+            notes:          { type: 'string',  description: '其他备注' }
           },
-          required: ['orderId', 'customerName', 'items', 'totalAmount']
+          required: ['orderId', 'customerName', 'customerPhone', 'items', 'totalAmount']
         },
         strict: true,
         onCall: function (payload) {
@@ -183,7 +300,7 @@
           return '订单 ' + (payload.orderId || '(未填)') + ' 已提交到本系统,字段: '
             + Object.keys(payload).join(', ');
         }
-      }],
+      }, orderValidateTool],
       // v5:内置工具开关,changeSkin 默认开启,传 false 关闭
       builtinTools: { changeSkin: true },
       // 页面感知:捕获宿主页面的 JS 报错、接口错误、错误弹窗,注入给 AI
@@ -200,6 +317,105 @@
     // 用户可通过 builtinTools: { changeSkin: false } 关闭
     AIAgent.registerBuiltinTool(AIAgent.changeSkinTool(agent));
     log('内置 changeSkin 工具已注册(持久,所有会话生效)');
+
+    // ===== 订单提交(模拟真实第三方系统) =====
+    var orderStatusEl = document.getElementById('order-status');
+    var submitBtn = document.getElementById('btn-submit-order');
+    var MOCK_API = 'http://localhost:7000';
+
+    /** 收集表单数据 */
+    function collectForm() {
+      var fields = [
+        'orderId', 'customerName', 'customerPhone', 'items', 'totalAmount',
+        'urgencyCode', 'urgencyReason', 'warehouse', 'shippingMethod', 'approvalCode',
+        'notes'
+      ];
+      var data = {};
+      fields.forEach(function (k) {
+        var el = document.querySelector('[data-field="' + k + '"]');
+        if (el && el.value.trim()) data[k] = el.value.trim();
+      });
+      return data;
+    }
+
+    /** 显示 Toast(模拟 Element UI 风格) */
+    function showResultToast(type, text) {
+      var toast = document.createElement('div');
+      // type: 'error' | 'success'
+      if (type === 'error') {
+        toast.className = 'el-message el-message--error';
+        toast.style.cssText = 'position:fixed;top:24px;left:50%;transform:translateX(-50%);padding:14px 28px;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.1);max-width:500px;';
+      } else {
+        toast.className = 'el-message el-message--success';
+        toast.style.cssText = 'position:fixed;top:24px;left:50%;transform:translateX(-50%);padding:14px 28px;background:#f0fdf4;color:#16a34a;border:1px solid #86efac;border-radius:8px;z-index:99999;font-size:14px;box-shadow:0 4px 20px rgba(0,0,0,0.1);';
+      }
+      toast.textContent = text;
+      document.body.appendChild(toast);
+      setTimeout(function () { toast.remove(); }, 5000);
+    }
+
+    /** 提交订单到第三方系统 */
+    submitBtn.addEventListener('click', function () {
+      var data = collectForm();
+      if (!data.customerName && !data.items) {
+        orderStatusEl.textContent = '请先填写或由 AI 录入订单信息';
+        orderStatusEl.style.color = '#ef4444';
+        return;
+      }
+
+      submitBtn.disabled = true;
+      submitBtn.textContent = '提交中...';
+      orderStatusEl.textContent = '正在提交到订单系统...';
+      orderStatusEl.style.color = '#3b82f6';
+
+      fetch(MOCK_API + '/api/orders/submit', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(data)
+      }).then(function (r) {
+        return r.json().then(function (body) {
+          return { status: r.status, body: body };
+        });
+      }).then(function (result) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '提交订单';
+
+        if (result.status >= 400) {
+          // 错误:显示 Toast + 状态栏
+          var errMsg = result.body.message || '未知错误';
+          var detail = result.body.detail || '';
+          var fields = result.body.fields;
+          var fullMsg = errMsg;
+          if (detail) fullMsg += ': ' + detail;
+          if (fields && fields.length) fullMsg += ' (' + fields.map(function(f) { return f.error; }).join('; ') + ')';
+
+          showResultToast('error', fullMsg);
+          orderStatusEl.textContent = '提交失败 (HTTP ' + result.status + '): ' + errMsg;
+          orderStatusEl.style.color = '#ef4444';
+          log('订单提交失败: HTTP ' + result.status + ' ' + errMsg);
+        } else {
+          // 成功
+          showResultToast('success', '订单提交成功!单号: ' + (result.body.orderId || '') + ',预计 ' + (result.body.estimatedDelivery || '') + ' 送达');
+          orderStatusEl.textContent = '提交成功!单号: ' + result.body.orderId;
+          orderStatusEl.style.color = '#16a34a';
+          log('订单提交成功: ' + result.body.orderId);
+        }
+      }).catch(function (e) {
+        submitBtn.disabled = false;
+        submitBtn.textContent = '提交订单';
+        showResultToast('error', '网络异常: ' + e.message + ',请检查网络连接后重试');
+        orderStatusEl.textContent = '网络异常: ' + e.message;
+        orderStatusEl.style.color = '#ef4444';
+        log('订单提交网络异常: ' + e.message);
+      });
+    });
+
+    // 清空表单
+    document.getElementById('btn-clear-form').addEventListener('click', function () {
+      document.querySelectorAll('[data-field]').forEach(function (el) { el.value = ''; });
+      orderStatusEl.textContent = '';
+      log('表单已清空');
+    });
 
     // ===== 2. 临时工具演示 =====
     var ephemeralAdded = false;
@@ -750,6 +966,103 @@
     document.getElementById('trigger-chat').addEventListener('click', function () {
       agent.open();
     });
+
+    // ===== 6. 表单校验引擎测试 =====
+    // 直接调 orderValidateTool.onCall(纯前端执行),结果打印到 log
+    var validateFn = orderValidateTool.onCall;
+
+    function runValidateCase(label, formData) {
+      log('--- 校验用例: ' + label + ' ---');
+      log('formData: ' + JSON.stringify(formData));
+      try {
+        var result = validateFn({ formData: formData });
+        log('valid=' + result.valid + ', errors=' + result.errors.length +
+            ', warnings=' + result.warnings.length + ', passed=' + result.passedCount);
+        if (result.message) {
+          result.message.split('\n').forEach(function (line) { log(line); });
+        }
+      } catch (e) {
+        log('校验执行异常: ' + e.message);
+      }
+    }
+
+    // --- 基础校验 ---
+    document.getElementById('btn-v-empty').addEventListener('click', function () {
+      runValidateCase('空表单', {});
+    });
+    document.getElementById('btn-v-phone-bad').addEventListener('click', function () {
+      runValidateCase('手机格式错', {
+        orderId: 'ORD-001', customerName: '张三', customerPhone: '123',
+        items: '5台手机', totalAmount: 5000
+      });
+    });
+    document.getElementById('btn-v-amount-neg').addEventListener('click', function () {
+      runValidateCase('金额为负', {
+        orderId: 'ORD-002', customerName: '李四', customerPhone: '13800138000',
+        items: '5台手机', totalAmount: -100
+      });
+    });
+    document.getElementById('btn-v-enum-bad').addEventListener('click', function () {
+      runValidateCase('加急级别非法', {
+        orderId: 'ORD-003', customerName: '王五', customerPhone: '13800138000',
+        items: '5台手机', totalAmount: 5000, urgencyCode: 'super'
+      });
+    });
+
+    // --- 跨字段依赖 ---
+    document.getElementById('btn-v-urgent-no-reason').addEventListener('click', function () {
+      runValidateCase('加急订单缺原因', {
+        orderId: 'ORD-004', customerName: '赵六', customerPhone: '13800138000',
+        items: '5台手机', totalAmount: 50000, urgencyCode: 'urgent'
+      });
+    });
+    document.getElementById('btn-v-big-no-approval').addEventListener('click', function () {
+      runValidateCase('大额缺审批码', {
+        orderId: 'ORD-005', customerName: '孙七', customerPhone: '13800138000',
+        items: '100台设备', totalAmount: 150000
+      });
+    });
+    document.getElementById('btn-v-bj-no-shipping').addEventListener('click', function () {
+      runValidateCase('北京仓缺物流', {
+        orderId: 'ORD-006', customerName: '周八', customerPhone: '13800138000',
+        items: '10台笔记本', totalAmount: 80000, warehouse: 'BJ'
+      });
+    });
+
+    // --- 警告级 / 完整通过 ---
+    document.getElementById('btn-v-warning').addEventListener('click', function () {
+      runValidateCase('大额无备注(警告)', {
+        orderId: 'ORD-007', customerName: '吴九', customerPhone: '13800138000',
+        items: '50台显示器', totalAmount: 80000, urgencyCode: 'normal'
+      });
+    });
+    document.getElementById('btn-v-pass').addEventListener('click', function () {
+      runValidateCase('完整合法', {
+        orderId: 'ORD-008', customerName: '郑十', customerPhone: '13800138000',
+        items: '5台小米14', totalAmount: 25000,
+        urgencyCode: 'urgent', urgencyReason: '客户紧急上线',
+        warehouse: 'BJ', shippingMethod: '顺丰次日达',
+        notes: '重点客户订单'
+      });
+    });
+
+    // --- 端到端 ---
+    document.getElementById('btn-v-e2e').addEventListener('click', function () {
+      // 清空表单,留一个干净的上下文
+      document.querySelectorAll('[data-field]').forEach(function (el) { el.value = ''; });
+      agent.open();
+      log('浮窗已打开,将自动发送消息...');
+      setTimeout(function () {
+        // 通过 SDK 暴露的 API 发送消息
+        if (typeof agent.sendMessage === 'function') {
+          agent.sendMessage('帮我录一单加急,北京仓,15万,客户张三,手机13800138000,5台小米14');
+          log('消息已发送 → AI 应该调 query_dict + validate_form(失败)+ 追问补字段');
+        } else {
+          log('agent.sendMessage 不可用,请手动在浮窗输入: 帮我录一单加急,北京仓,15万,客户张三,手机13800138000,5台小米14');
+        }
+      }, 600);
+    });
+
   </script>
 </body>
 </html>

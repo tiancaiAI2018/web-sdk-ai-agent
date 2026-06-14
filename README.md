@@ -265,7 +265,10 @@ curl "http://localhost:8080/admin/audit?limit=20" \
       const r = await fetch('https://third-party.com/api/ai-token', { method: 'POST' });
       const j = await r.json();
       return { accessToken: j.accessToken, refreshToken: j.refreshToken };
-    }
+    },
+    // 页面感知:自动捕获宿主页面的 JS 异常、HTTP 错误、UI 错误弹窗
+    // AI 能主动发现页面异常并帮助用户(如"刚才提交失败了,怎么回事?")
+    pageAwareness: { enabled: true }
   });
 
   agent.stream({
@@ -280,7 +283,7 @@ curl "http://localhost:8080/admin/audit?limit=20" \
 
 **关键不变量**:`clientSecret` 永远在第三方后端 ↔ 我方后端 之间,**绝不出现在浏览器**。SDK 内部自动续期(自动解析 JWT 的 `exp` claim,提前 30s 重调 `getAccessToken`)。
 
-详见 `static/sdk/ai-agent-sdk.js` 顶部 JSDoc。
+详细 API 文档见 `web-sdk/docs/sdk-api.md`。
 
 ---
 
@@ -389,14 +392,47 @@ src/main/java/com/example/agent/
 src/main/resources/
 ├── application.yml
 ├── static/
-│   ├── sdk/ai-agent-sdk.js        浏览器 UMD SDK
-│   └── examples/host-page.html    第三方接入 demo 页
+│   ├── sdk/ai-agent-sdk.js        浏览器 UMD SDK(vite 构建自动复制)
+│   └── examples/host-page.html    第三方接入 demo 页(含页面感知端到端演示)
 └── agentscope-java-docs/          (gitignore)AgentScope 官方文档本地镜像
 
+web-sdk/                           SDK 源码(TypeScript + Vite)
+├── src/
+│   ├── index.ts                   ESM 入口
+│   ├── core/
+│   │   ├── agent.ts               AIAgent 主编排器
+│   │   ├── auth.ts                TokenCache(JWT 自动续期)
+│   │   ├── sse.ts                 SSE 帧解析(consumeSseStream)
+│   │   ├── tools.ts               工具注册 + pageErrorsTool + changeSkinTool + dictTool
+│   │   ├── page-awareness.ts      页面感知采集层(v5 新增)
+│   │   ├── skin.ts                皮肤系统(SkinRegistry + deriveSkin)
+│   │   ├── markdown.ts            marked + DOMPurify 渲染
+│   │   └── types.ts               公共类型定义
+│   ├── ui/
+│   │   ├── widget.ts              Widget(Shadow DOM 浮窗)
+│   │   ├── theme.ts               主题色板
+│   │   ├── fonts.ts               Google Fonts 加载器
+│   │   ├── styles.ts              CSS 常量导出
+│   │   ├── components/            UI 组件(message / typing / tool-card)
+│   │   └── skins/                 皮肤 CSS(iridescent-bloom / classic)
+│   └── adapters/
+│       ├── umd.ts                 UMD 入口(window.AIAgent)
+│       ├── react.tsx              React 适配(AIAgentWidget / useAIAgent)
+│       └── vue.ts                 Vue 适配(stub)
+├── docs/
+│   └── sdk-api.md                 SDK API 参考手册
+├── vite.config.ts                 ESM 构建
+├── vite.config.umd.ts             UMD 构建(含自动复制到 Spring Boot static/)
+├── tsconfig.json
+└── package.json
+
 examples/                          第三方后端 mock
-├── third-party-mock.js            Node Express,7000 端口,持 secret
+├── third-party-mock.js            Node Express,7000 端口,持 secret + 订单模拟接口
 ├── package.json
 └── package-lock.json
+
+docs/
+└── feature-roadmap.md             SDK 能力扩展规划(优先级 + 依赖关系)
 ```
 
 ---
@@ -540,6 +576,23 @@ AgentScope 官方文档没明说、但代码里已经验证过的事实:
 - ✅ 多轮"智能录单"基础:`SessionManager.stream(sid, text, activeTools)` + `JsonSession` 记忆持久化
 - ✅ 工具注册表 30 分钟 TTL + 同步 `SessionManager.evict` 控内存
 - ✅ 审计 `TOOL_REGISTER` / `TOOL_UNREGISTER` / `FORM_SUBMIT`(args 只存 hash)
+
+### v5 已做(页面感知 Page Awareness)
+
+- ✅ 页面感知采集层:`web-sdk/src/core/page-awareness.ts`
+  - 全局错误捕获:`window.onerror` + `unhandledrejection`,链式调用不吞宿主 handler
+  - 网络错误拦截:`fetch` + `XMLHttpRequest` 拦截器,自动排除 SDK 自身请求
+  - DOM 弹窗检测:`MutationObserver` 监听 11 种主流 UI 框架错误组件选择器
+- ✅ 错误缓冲区:环形缓冲(默认 50) + 去重窗口(5s) + 默认脱敏(JWT/密码/邮箱/信用卡)
+- ✅ 双通道上下文注入:
+  - 消息前缀自动注入(`[Page Context]` 区块,UI 显示原文,API 发增强文本)
+  - `get_page_errors` 虚拟工具(AI 按需查询错误详情)
+- ✅ UI 反馈:`critical` 级别错误触发气泡红色角标 + 主动系统消息(30s 节流)
+- ✅ 多实例安全:全局拦截器静态引用计数,同一页面多 AIAgent 实例只安装一次
+- ✅ 完整生命周期管理:`start()`/`stop()`/`destroy()` 正确安装和还原所有 handler
+- ✅ Demo 页面真实业务流程:AI 填单 → 用户提交 → 第三方接口报错 → AI 主动帮忙
+- ✅ Mock 后端错误模拟:`/api/orders/submit` 循环返回 500(库存不足) → 400(手机号格式) → 200(成功)
+- ✅ SDK API 文档:`web-sdk/docs/sdk-api.md`
 
 ### 留给下一轮(P2 / P3 / P4)
 

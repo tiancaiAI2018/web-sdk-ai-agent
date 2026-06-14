@@ -595,6 +595,20 @@ export function pageErrorsTool(agent: {
 }
 
 // ====================================================================
+// 表单校验工具 — 独立模块,转发导出
+// ====================================================================
+
+export {
+  validateTool,
+  runValidation,
+  type ValidationRule,
+  type ValidationResult,
+  type ValidationError,
+  type ValidationSeverity,
+  type ValidateToolOptions,
+} from './validate-tool';
+
+// ====================================================================
 // TOOL_SUSPENDED 恢复流
 // ====================================================================
 

@@ -273,6 +273,68 @@ app.post('/api/sim/order-fail', (req, res) => {
   res.status(500).json({ error: 'order_submit_failed', message: '订单提交失败: 库存不足' });
 });
 
+// ====================================================================
+// 订单提交 API —— 模拟真实的第三方订单系统
+//
+// POST /api/orders/submit
+// Body: { orderId, customerName, customerPhone, items, totalAmount, notes }
+//
+// 模拟逻辑:
+//   - 第一次提交: 返回 500 库存不足
+//   - 第二次提交: 返回 400 手机号格式错误
+//   - 第三次提交: 返回 200 成功
+//   - 之后循环: 500 → 400 → 200 → 500 → ...
+//
+// 这样用户可以在 AI 填完表单后点"提交",前两次一定报错,
+// SDK 页面感知捕获到错误后,用户问 AI "为什么失败了",
+// AI 能看到具体的 HTTP 状态码 + 错误信息 + DOM Toast 内容,主动帮忙解决。
+// ====================================================================
+
+let orderSubmitCount = 0;
+
+app.post('/api/orders/submit', (req, res) => {
+  orderSubmitCount++;
+  const body = req.body || {};
+  const cycle = orderSubmitCount % 3;
+
+  console.log(`[mock orders] submit #${orderSubmitCount} body=`, JSON.stringify(body));
+
+  if (cycle === 1) {
+    // 第一次: 库存不足
+    console.log(`[mock orders] → 500 库存不足`);
+    return res.status(500).json({
+      error: 'INSUFFICIENT_STOCK',
+      message: '库存不足',
+      detail: '商品"' + (body.items || '未知商品') + '"在目标仓库的可用库存为 0,无法完成出库。请联系仓储部门确认。',
+      errorCode: 50010,
+      suggestion: '建议更换仓库或联系仓管补货后重试'
+    });
+  }
+
+  if (cycle === 2) {
+    // 第二次: 手机号校验失败
+    console.log(`[mock orders] → 400 手机号格式错误`);
+    return res.status(400).json({
+      error: 'VALIDATION_ERROR',
+      message: '参数校验失败',
+      fields: [
+        { field: 'customerPhone', error: '手机号格式不正确,应为 11 位数字,当前值: "' + (body.customerPhone || '') + '"' }
+      ],
+      errorCode: 40001
+    });
+  }
+
+  // 第三次: 成功
+  const orderId = 'ORD-' + Date.now().toString(36).toUpperCase();
+  console.log(`[mock orders] → 200 成功 orderId=${orderId}`);
+  res.json({
+    success: true,
+    orderId: orderId,
+    message: '订单提交成功',
+    estimatedDelivery: '3-5 个工作日'
+  });
+});
+
 /**
  * 健康检查 —— 管理端数据源健康检查会调用此接口
  */
