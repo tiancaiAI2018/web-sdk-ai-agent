@@ -238,6 +238,41 @@ app.get('/api/dict/:type/list', (req, res) => {
   res.json({ data: items });
 });
 
+// ====================================================================
+// 错误模拟 API —— 供页面感知(Page Awareness)测试使用
+// ====================================================================
+
+/** 返回 404 */
+app.get('/api/sim/404', (req, res) => {
+  res.status(404).json({ error: 'not_found', message: '资源不存在' });
+});
+
+/** 返回 500 */
+app.get('/api/sim/500', (req, res) => {
+  res.status(500).json({ error: 'internal_error', message: '服务器内部错误' });
+});
+
+/** 返回 403(带敏感信息:模拟鉴权失败泄露 token) */
+app.get('/api/sim/403', (req, res) => {
+  res.status(403).json({
+    error: 'forbidden',
+    message: 'Token Bearer eyJhbGciOiJSUzI1NiJ9.secret_token 已过期,请联系管理员',
+    email: 'admin@company.com'
+  });
+});
+
+/** 慢响应(超时测试) */
+app.get('/api/sim/timeout', (req, res) => {
+  setTimeout(() => {
+    res.json({ ok: true, message: '终于响应了' });
+  }, 10000);
+});
+
+/** 模拟订单提交失败(500 + 错误 Toast 联动) */
+app.post('/api/sim/order-fail', (req, res) => {
+  res.status(500).json({ error: 'order_submit_failed', message: '订单提交失败: 库存不足' });
+});
+
 /**
  * 健康检查 —— 管理端数据源健康检查会调用此接口
  */

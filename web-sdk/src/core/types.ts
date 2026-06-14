@@ -52,7 +52,7 @@ export interface AIAgentOptions {
    * 不传或 undefined = 全部启用;显式传 false 可关闭指定内置工具。
    * 示例:builtinTools: { changeSkin: false } 关闭换肤工具。
    */
-  builtinTools?: { changeSkin?: boolean };
+  builtinTools?: { changeSkin?: boolean; pageErrors?: boolean };
   /**
    * 皮肤名。可选:
    *   - 'iridescent-bloom' (默认,油彩/毛玻璃)
@@ -61,6 +61,8 @@ export interface AIAgentOptions {
    * 跟 theme 不冲突:skin 决定"布局/动画",theme 决定"色板"(主题切换仍走 setTheme)
    */
   skin?: string;
+  /** 页面感知:捕获宿主页面的 JS 报错、接口错误、错误弹窗,注入给 AI 主动感知。 */
+  pageAwareness?: PageAwarenessOptions;
 }
 
 // ====================================================================
@@ -229,4 +231,84 @@ export interface PendingToolCall {
   toolUseId: string;
   result: unknown;
   ts: number;
+}
+
+// ====================================================================
+// 页面感知 (Page Awareness)
+// ====================================================================
+
+/** 错误来源 */
+export type PageErrorSource = 'global' | 'network' | 'dom_popup';
+
+/** 错误严重级别 */
+export type PageErrorSeverity = 'info' | 'warning' | 'error' | 'critical';
+
+/** 页面感知捕获的单条错误 */
+export interface PageError {
+  /** 去重用 ID */
+  id: string;
+  /** 来源类别 */
+  source: PageErrorSource;
+  /** 严重级别 */
+  severity: PageErrorSeverity;
+  /** ISO 时间戳 */
+  timestamp: string;
+  /** 人可读摘要 */
+  message: string;
+  /** 来源相关的结构化细节 */
+  details: Record<string, unknown>;
+  /** 是否已注入过消息前缀(内部标记,避免重复注入) */
+  surfaced?: boolean;
+}
+
+/**
+ * `AIAgent.init({ pageAwareness })` 配置项。
+ *
+ * 页面感知让 SDK 自动捕获宿主页面的 JS 异常、HTTP 错误、UI 错误弹窗,
+ * 注入到 AI 的上下文中,让 AI 能主动发现并帮助用户解决问题。
+ *
+ * 默认关闭(enabled: false),开启后三个采集源全部启用。
+ */
+export interface PageAwarenessOptions {
+  /** 总开关。默认 false(opt-in)。 */
+  enabled?: boolean;
+
+  /** 采集源开关(enabled=true 时全部默认开启) */
+  capture?: {
+    /** window.onerror + unhandledrejection */
+    globalErrors?: boolean;
+    /** fetch / XMLHttpRequest 拦截(HTTP 4xx/5xx + 网络失败) */
+    networkErrors?: boolean;
+    /** MutationObserver 监听 UI 库的错误弹窗/Toast */
+    domErrorPopups?: boolean;
+  };
+
+  /** 隐私与过滤 */
+  filter?: {
+    /** 忽略的 URL 正则(如埋点、CDN、第三方脚本) */
+    ignoreUrls?: RegExp[];
+    /** 忽略的错误消息正则 */
+    ignoreMessages?: RegExp[];
+    /** 脱敏正则(匹配到的内容替换为 [REDACTED]) */
+    redactPatterns?: RegExp[];
+    /** 错误消息最大长度,超出截断。默认 500 */
+    maxMessageLength?: number;
+  };
+
+  /** 行为配置 */
+  behavior?: {
+    /** 环形缓冲区大小。默认 50 */
+    maxBufferSize?: number;
+    /** 去重窗口(ms),同一错误在此时间内不重复入库。默认 5000 */
+    dedupeWindowMs?: number;
+    /** 每条消息最多注入几条错误。默认 5 */
+    maxErrorsPerMessage?: number;
+    /** 是否自动注入消息前缀。默认 true */
+    autoInject?: boolean;
+    /** 是否注册 get_page_errors 虚拟工具。默认 true */
+    registerTool?: boolean;
+  };
+
+  /** 采集到错误时的回调(宿主页面集成用,在过滤/脱敏之前调用) */
+  onError?: (error: PageError) => void;
 }

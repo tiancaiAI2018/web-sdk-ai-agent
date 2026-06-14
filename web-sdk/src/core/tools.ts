@@ -33,6 +33,7 @@ import type {
   ToolCallEndPayload,
   RoundEndPayload,
   MessageRole,
+  PageError,
 } from './types';
 
 // ====================================================================
@@ -522,6 +523,73 @@ export function changeSkinTool(agent: {
       } catch (e) {
         return { ok: false, error: (e as Error).message, currentSkin: current };
       }
+    },
+  };
+}
+
+/**
+ * 页面感知虚拟工具 — AI 主动查询 SDK 捕获的宿主页面错误。
+ * 与 changeSkinTool 完全同构:工厂函数返回 ToolDef,onCall 在客户端执行。
+ */
+export function pageErrorsTool(agent: {
+  getPageErrors: () => PageError[];
+  clearPageErrors: () => void;
+}): ToolDef {
+  return {
+    name: 'get_page_errors',
+    description:
+      '查询 SDK 检测到的宿主页面错误(JS 异常、HTTP 错误、UI 错误弹窗)。\n' +
+      '当用户可能遇到问题但未明确描述,或你需要更多细节来诊断问题时,调用此工具。\n' +
+      '返回结果包含错误时间、来源(global/network/dom_popup)、严重级别和详情。',
+    parameters: {
+      type: 'object',
+      properties: {
+        source: {
+          type: 'string',
+          enum: ['all', 'global', 'network', 'dom_popup'],
+          description: '按来源过滤。all=全部,global=JS异常,network=HTTP/网络错误,dom_popup=UI弹窗。默认 all。',
+        },
+        limit: {
+          type: 'number',
+          description: '最多返回几条(按时间倒序)。默认 10。',
+        },
+      },
+      required: [],
+    },
+    strict: false,
+    onCall: (args) => {
+      const source = ((args as Record<string, unknown>)?.source as string) || 'all';
+      const limit = ((args as Record<string, unknown>)?.limit as number) || 10;
+
+      let errors = agent.getPageErrors();
+      if (source !== 'all') {
+        errors = errors.filter((e) => e.source === source);
+      }
+      errors = errors.slice(-limit);
+
+      if (errors.length === 0) {
+        return {
+          ok: true,
+          count: 0,
+          errors: [],
+          message: '未检测到页面错误。',
+        };
+      }
+
+      return {
+        ok: true,
+        count: errors.length,
+        errors: errors.map((e) => ({
+          source: e.source,
+          severity: e.severity,
+          timestamp: e.timestamp,
+          message: e.message,
+          details: e.details,
+        })),
+        message:
+          `检测到 ${errors.length} 条页面错误。` +
+          `可以根据错误信息向用户解释发生了什么,并建议解决或重试方案。`,
+      };
     },
   };
 }

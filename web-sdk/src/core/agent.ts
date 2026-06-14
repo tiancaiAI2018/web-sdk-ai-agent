@@ -40,8 +40,10 @@ import {
   postToolResult,
   renderToolResultFailedCard,
   resumePendingToolResults,
+  pageErrorsTool,
   type ToolCtx,
 } from './tools';
+import { PageAwareness, type PageAwarenessHost } from './page-awareness';
 import { Widget } from '../ui/widget';
 import { applyTheme, DEFAULT_THEME } from '../ui/theme';
 import { Skin, SkinRegistry } from './skin';
@@ -78,6 +80,7 @@ import type {
   ToolCallDeltaPayload,
   ToolCallStartPayload,
   ToolCallEndPayload,
+  PageError,
   RoundEndPayload,
   MessageRole,
 } from './types';
@@ -121,7 +124,7 @@ export class AIAgent {
     clientPrefix: string;
     persistentTools: ToolDef[];
     /** 内置工具开关 */
-    builtinTools: { changeSkin?: boolean };
+    builtinTools: { changeSkin?: boolean; pageErrors?: boolean };
     /** 皮肤名(iridescent-bloom / classic / 自定义) */
     skin: string;
   };
@@ -161,6 +164,8 @@ export class AIAgent {
   _thinkingCard: HTMLElement | null = null;
   /** 当前流式思考的文本累积缓冲 */
   _thinkingBuf: string = '';
+  /** 页面感知模块(init 时按需创建,enabled=false 时为 null) */
+  _pageAwareness: PageAwareness | null = null;
   /**
    * tool_call_delta 累积中的占位卡:toolUseId → 卡片 DOM。
    * 完整 tool_call last 帧来时,从这里取卡 promote 成完整卡。
@@ -221,6 +226,26 @@ export class AIAgent {
       this._widget.setWelcome(this._opts.welcomeMessage);
     }
 
+    // ===== 页面感知(可选)=====
+    if (opts.pageAwareness?.enabled) {
+      const self = this;
+      const host: PageAwarenessHost = {
+        isWidgetOpen: () => self._isOpen,
+        appendSystemMsg: (text: string) => self._appendMsg('system', text),
+        onErrorBadge: (count: number) => self._widget?.setErrorBadge(count),
+      };
+      this._pageAwareness = new PageAwareness(this.endpoint, opts.pageAwareness, host);
+      this._pageAwareness.start();
+
+      // 注册 get_page_errors 内置工具(除非显式关闭)
+      if (opts.pageAwareness.behavior?.registerTool !== false) {
+        AIAgent.registerBuiltinTool(pageErrorsTool({
+          getPageErrors: () => this.getPageErrors(),
+          clearPageErrors: () => this.clearPageErrors(),
+        }));
+      }
+    }
+
     // 启动时扫 sessionStorage 续传上次未提交的 tool result(异步,不影响 init)
     setTimeout(() => {
       void this._resumePendingToolResults();
@@ -234,6 +259,8 @@ export class AIAgent {
   }
 
   destroy(): void {
+    this._pageAwareness?.stop();
+    this._pageAwareness = null;
     if (this._widget) {
       this._widget.destroy();
       this._widget = null;
@@ -302,6 +329,10 @@ export class AIAgent {
     for (const t of AIAgent._builtinTools) {
       // changeSkin 工具:默认启用,显式传 false 关闭
       if (t.name === 'change_skin' && builtinCfg && builtinCfg.changeSkin === false) {
+        continue;
+      }
+      // get_page_errors 工具:默认启用,显式传 false 关闭
+      if (t.name === 'get_page_errors' && builtinCfg && builtinCfg.pageErrors === false) {
         continue;
       }
       persistent.push(t);
@@ -500,6 +531,25 @@ export class AIAgent {
   /** 列出所有已注册皮肤的详细信息(含 aiHint,供 LLM changeSkin 工具用) */
   listSkinsWithInfo(): Array<{ name: string; aiHint: string }> {
     return SkinRegistry.instance().listWithInfo();
+  }
+
+  // ====================================================================
+  // 公共 API — 页面感知(Page Awareness)
+  // ====================================================================
+
+  /** 获取当前页面感知缓冲区中的错误列表(只读副本) */
+  getPageErrors(): PageError[] {
+    return this._pageAwareness?.getErrors() || [];
+  }
+
+  /** 清空页面感知错误缓冲区 */
+  clearPageErrors(): void {
+    this._pageAwareness?.clear();
+  }
+
+  /** 手动上报一条页面错误到缓冲区(宿主页面集成用) */
+  reportPageError(error: Partial<PageError>): void {
+    this._pageAwareness?.report(error);
   }
 
   // ====================================================================
@@ -735,6 +785,9 @@ export class AIAgent {
     this._pendingDelta.clear();
     // 临时工具仅当前会话生效,新会话清空;持久工具保留
     this._ephemeralTools = [];
+    // 页面感知:新会话重置 surfaced 标记(缓冲区保留,但允许重新注入)
+    this._pageAwareness?.resetSurfacedFlags();
+    if (this._widget) this._widget.setErrorBadge(0);
     // 新会话:重新显示 welcome 区(如果是新会话)
     if (this._widget && this._opts.welcomeMessage) {
       this._widget.setWelcome(this._opts.welcomeMessage);
@@ -911,6 +964,14 @@ export class AIAgent {
       };
     })();
 
+    // ===== 页面感知:注入错误上下文到消息头部 =====
+    // UI 显示原始 text,API 发送增强后的 apiMessage(AI 能看到页面错误)
+    let apiMessage = text;
+    if (this._pageAwareness?.isEnabled()) {
+      const ctxBlock = this._pageAwareness.buildContextBlock();
+      if (ctxBlock) apiMessage = ctxBlock + '\n\n' + text;
+    }
+
     const postOpts: {
       sessionId?: string;
       message: string;
@@ -926,7 +987,7 @@ export class AIAgent {
       onRoundEnd: (parsed: RoundEndPayload) => void;
       onText: (text: string) => void;
     } = {
-      message: text,
+      message: apiMessage,
       // onChunk/onDone/onError 必须通过间接引用调用,不能直接传 lifecycle 的方法!
       // 因为 round_end 会替换 lifecycle.onChunk/onDone/onError 为 newLifecycle 的版本,
       // 如果直接传值,consumeSseStream 持有的是旧引用,id:last 时调不到新 onDone,

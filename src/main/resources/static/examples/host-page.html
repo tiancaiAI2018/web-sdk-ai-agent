@@ -17,7 +17,7 @@
     .demo-section p { margin: 4px 0; font-size: 13px; color: #475569; }
     .demo-section button { margin: 4px 4px 4px 0; padding: 6px 14px; border: 1px solid #93c5fd; border-radius: 4px; background: #fff; cursor: pointer; font: inherit; }
     .demo-section button:hover { background: #dbeafe; }
-    .log-area { margin-top: 8px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; max-height: 120px; overflow-y: auto; font-size: 12px; color: #64748b; font-family: monospace; }
+    .log-area { margin-top: 8px; padding: 8px; background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 4px; max-height: 200px; overflow-y: auto; font-size: 12px; color: #64748b; font-family: monospace; }
   </style>
 </head>
 <body>
@@ -65,6 +65,64 @@
     <button id="btn-skin-sunset" style="border-color:#fb923c; background:#fff7ed;">注册并切换 sunset(自定义)</button>
     <button id="btn-skin-list">列出所有皮肤</button>
     <p id="skin-status" style="margin-top:8px;font-weight:bold;color:#6d28d9;">当前皮肤: iridescent-bloom</p>
+  </div>
+
+  <!-- ================================================================ -->
+  <!-- 页面感知全面测试区                                                -->
+  <!-- ================================================================ -->
+  <div class="demo-section" style="border-left-color:#ef4444; background:#fef2f2;">
+    <h3 style="color:#dc2626;">1. 全局错误捕获 (Global Errors)</h3>
+    <p>window.onerror + unhandledrejection 自动捕获,链式调用不吞宿主 handler。</p>
+    <button id="btn-err-throw">throw JS Error (异步)</button>
+    <button id="btn-err-throw-sync">throw JS Error (同步)</button>
+    <button id="btn-err-promise">Unhandled Promise Rejection</button>
+    <button id="btn-err-async">async 函数抛异常</button>
+    <button id="btn-err-typeerror">TypeError (undefined.xxx)</button>
+  </div>
+
+  <div class="demo-section" style="border-left-color:#f97316; background:#fff7ed;">
+    <h3 style="color:#c2410c;">2. 网络错误拦截 (Network Errors)</h3>
+    <p>fetch / XHR 拦截器捕获 HTTP 4xx/5xx 和网络失败。<strong>SDK 自身请求(/chat/、/auth/)会被排除。</strong></p>
+    <button id="btn-err-404">fetch 404 (mock server)</button>
+    <button id="btn-err-500">fetch 500 (mock server)</button>
+    <button id="btn-err-403">fetch 403 含敏感信息 (脱敏测试)</button>
+    <button id="btn-err-xhr-404">XHR 404</button>
+    <button id="btn-err-xhr-500">XHR 500</button>
+    <button id="btn-err-net-fail">fetch 网络不通 (断网模拟)</button>
+    <button id="btn-err-order-fail">模拟订单提交失败 (POST 500)</button>
+    <button id="btn-err-sdk-self">SDK 自身请求排除验证</button>
+  </div>
+
+  <div class="demo-section" style="border-left-color:#8b5cf6; background:#f5f3ff;">
+    <h3 style="color:#6d28d9;">3. DOM 错误弹窗检测 (MutationObserver)</h3>
+    <p>监听 document.body 子树变化,匹配主流 UI 框架的错误组件。SDK 自身 DOM 被排除。</p>
+    <button id="btn-err-toast-bootstrap">Bootstrap alert-danger</button>
+    <button id="btn-err-toast-element">Element UI el-message--error</button>
+    <button id="btn-err-toast-ant">Ant Design ant-message-error</button>
+    <button id="btn-err-toast-aria">ARIA role=alert</button>
+    <button id="btn-err-toast-vant">Vant van-toast--fail (移动端)</button>
+  </div>
+
+  <div class="demo-section" style="border-left-color:#0ea5e9; background:#f0f9ff;">
+    <h3 style="color:#0369a1;">4. 脱敏 / 去重 / 缓冲管理</h3>
+    <p>默认脱敏:JWT token、密码、邮箱、信用卡号自动替换为 [REDACTED]。同一错误 5 秒内不重复入库。</p>
+    <button id="btn-err-redact">脱敏测试 (含密码+邮箱)</button>
+    <button id="btn-err-dedupe">去重测试 (连发 5 次相同错误)</button>
+    <button id="btn-err-batch">批量错误 (快速触发 10 种不同错误)</button>
+    <button id="btn-err-critical">Critical 级别 (触发角标+主动消息)</button>
+    <button id="btn-err-report">手动 reportPageError</button>
+    <button id="btn-err-list">查看捕获的错误</button>
+    <button id="btn-err-list-detail">查看详细信息 (含脱敏效果)</button>
+    <button id="btn-err-clear">清空错误缓冲</button>
+  </div>
+
+  <div class="demo-section" style="border-left-color:#10b981; background:#ecfdf5;">
+    <h3 style="color:#047857;">5. AI 上下文注入验证 (端到端)</h3>
+    <p><strong>操作流程</strong>:先点下方按钮触发错误 → 打开浮窗发消息(如"帮我录一单") → 观察 AI 是否主动提及页面异常。</p>
+    <button id="btn-err-scenario" style="background:#dcfce7; border-color:#86efac;">
+      模拟真实场景 (触发 3 个错误 → 打开浮窗 → 发消息测试)
+    </button>
+    <p style="font-size:12px; color:#6b7280;">点击后会自动触发: fetch 500 + JS Error + DOM Toast,并自动打开浮窗。你只需输入任意消息发送,观察 AI 回复。</p>
   </div>
 
   <h3>对话触发</h3>
@@ -127,7 +185,14 @@
         }
       }],
       // v5:内置工具开关,changeSkin 默认开启,传 false 关闭
-      builtinTools: { changeSkin: true }
+      builtinTools: { changeSkin: true },
+      // 页面感知:捕获宿主页面的 JS 报错、接口错误、错误弹窗,注入给 AI
+      pageAwareness: {
+        enabled: true,
+        onError: function(err) {
+          log('页面感知捕获: [' + err.source + '] ' + err.message);
+        }
+      }
     });
 
     // ===== 1.5 注册内置 changeSkin 工具 =====
@@ -406,7 +471,282 @@
       updateSkinStatus();
     });
 
-    // ===== 4. 打开浮窗对话 =====
+    // ===== 4. 页面感知全面测试 =====
+    var MOCK = 'http://localhost:7000';
+
+    // ---- 辅助函数 ----
+    function showToast(cls, text, extraAttr) {
+      var toast = document.createElement('div');
+      toast.className = cls;
+      if (extraAttr) toast.setAttribute(extraAttr[0], extraAttr[1]);
+      toast.textContent = text;
+      toast.style.cssText = 'position:fixed;top:' + (20 + Math.random() * 40) + 'px;left:50%;transform:translateX(-50%);padding:12px 24px;background:#fef2f2;color:#dc2626;border:1px solid #fca5a5;border-radius:8px;z-index:99999;font-size:14px;';
+      document.body.appendChild(toast);
+      setTimeout(function () { toast.remove(); }, 3000);
+    }
+
+    function xhrRequest(method, url) {
+      var xhr = new XMLHttpRequest();
+      xhr.open(method, url);
+      xhr.onload = function () { log('XHR ' + url + ' → ' + xhr.status); };
+      xhr.onerror = function () { log('XHR ' + url + ' → network error'); };
+      xhr.send();
+    }
+
+    // ---- 1. 全局错误 ----
+    document.getElementById('btn-err-throw').addEventListener('click', function () {
+      setTimeout(function () { throw new Error('模拟 JS 异常: 异步 throw'); }, 0);
+      log('已触发 JS Error (异步 throw)');
+    });
+
+    document.getElementById('btn-err-throw-sync').addEventListener('click', function () {
+      try { throw new Error('模拟同步 JS 异常'); } catch(e) {
+        // 同步 throw 在 try-catch 里不会被 window.onerror 捕获,
+        // 这里故意 catch 后手动 reportPageError 演示手动上报
+        agent.reportPageError({ source: 'global', severity: 'error', message: e.message, details: { stack: e.stack.substring(0, 500) } });
+        log('同步 throw 被 catch,已手动 reportPageError');
+      }
+    });
+
+    document.getElementById('btn-err-promise').addEventListener('click', function () {
+      new Promise(function (_, reject) { reject(new Error('模拟未处理的 Promise rejection')); });
+      log('已触发 Unhandled Promise Rejection');
+    });
+
+    document.getElementById('btn-err-async').addEventListener('click', function () {
+      (async function () { throw new Error('async 函数内部抛异常'); })();
+      log('已触发 async 函数异常 (走 unhandledrejection)');
+    });
+
+    document.getElementById('btn-err-typeerror').addEventListener('click', function () {
+      setTimeout(function () {
+        var obj = undefined;
+        obj.price.toFixed(2); // TypeError
+      }, 0);
+      log('已触发 TypeError: Cannot read properties of undefined');
+    });
+
+    // ---- 2. 网络错误 ----
+    document.getElementById('btn-err-404').addEventListener('click', function () {
+      fetch(MOCK + '/api/sim/404').then(function (r) { log('fetch 404 → status=' + r.status); }).catch(function () {});
+    });
+
+    document.getElementById('btn-err-500').addEventListener('click', function () {
+      fetch(MOCK + '/api/sim/500').then(function (r) { log('fetch 500 → status=' + r.status); }).catch(function () {});
+    });
+
+    document.getElementById('btn-err-403').addEventListener('click', function () {
+      fetch(MOCK + '/api/sim/403').then(function (r) {
+        return r.json().then(function (d) {
+          log('fetch 403 → 原始响应含敏感信息: ' + d.message);
+          log('  查看 getPageErrors 确认脱敏效果(Bearer token 和 email 应为 [REDACTED])');
+        });
+      }).catch(function () {});
+    });
+
+    document.getElementById('btn-err-xhr-404').addEventListener('click', function () {
+      xhrRequest('GET', MOCK + '/api/sim/404');
+      log('已发起 XHR GET /api/sim/404');
+    });
+
+    document.getElementById('btn-err-xhr-500').addEventListener('click', function () {
+      xhrRequest('GET', MOCK + '/api/sim/500');
+      log('已发起 XHR GET /api/sim/500');
+    });
+
+    document.getElementById('btn-err-net-fail').addEventListener('click', function () {
+      fetch('http://192.0.2.1:9999/nonexistent').catch(function (e) {
+        log('fetch 网络不通 → ' + e.message + ' (SDK 已捕获为 critical)');
+      });
+      log('已发起 fetch 到不可达地址 (192.0.2.1 = TEST-NET)');
+    });
+
+    document.getElementById('btn-err-order-fail').addEventListener('click', function () {
+      fetch(MOCK + '/api/sim/order-fail', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ orderId: 'ORD-2024-999', items: '5台手机' })
+      }).then(function (r) {
+        log('POST order-fail → status=' + r.status);
+        // 同时弹一个 DOM 错误 Toast(模拟真实业务场景:接口报错 → 弹 Toast)
+        showToast('alert-danger', '订单提交失败: 库存不足,请检查库存后重试', ['role', 'alert']);
+      }).catch(function () {});
+    });
+
+    document.getElementById('btn-err-sdk-self').addEventListener('click', function () {
+      // 这个请求会走 SDK 的 getAccessToken,应该被 _isOwnRequest 排除
+      // 先查一下当前错误数量
+      var before = agent.getPageErrors().length;
+      agent._ensureToken().then(function () {
+        var after = agent.getPageErrors().length;
+        log('SDK 自身请求(token refresh)前后错误数: ' + before + ' → ' + after + ' (应不变)');
+        if (before === after) {
+          log('  ✓ SDK 自身请求被正确排除');
+        } else {
+          log('  ✗ 异常:SDK 自身请求被错误捕获!');
+        }
+      }).catch(function (e) {
+        log('token 刷新失败(可能后端未启动): ' + e.message);
+      });
+    });
+
+    // ---- 3. DOM 弹窗 ----
+    document.getElementById('btn-err-toast-bootstrap').addEventListener('click', function () {
+      showToast('alert-danger', 'Bootstrap: 操作失败,请刷新页面重试', ['role', 'alert']);
+      log('已创建 Bootstrap alert-danger Toast');
+    });
+
+    document.getElementById('btn-err-toast-element').addEventListener('click', function () {
+      showToast('el-message el-message--error', 'Element UI: 网络异常,请稍后重试');
+      log('已创建 Element UI el-message--error Toast');
+    });
+
+    document.getElementById('btn-err-toast-ant').addEventListener('click', function () {
+      showToast('ant-message ant-message-error', 'Ant Design: 提交失败,服务端返回错误');
+      log('已创建 Ant Design ant-message-error Toast');
+    });
+
+    document.getElementById('btn-err-toast-aria').addEventListener('click', function () {
+      showToast('', 'ARIA: 系统维护中,预计 30 分钟后恢复', ['role', 'alert']);
+      log('已创建 ARIA role=alert Toast');
+    });
+
+    document.getElementById('btn-err-toast-vant').addEventListener('click', function () {
+      showToast('van-toast van-toast--fail', 'Vant: 加载失败');
+      log('已创建 Vant van-toast--fail Toast (移动端)');
+    });
+
+    // ---- 4. 脱敏 / 去重 / 缓冲管理 ----
+    document.getElementById('btn-err-redact').addEventListener('click', function () {
+      // 手动上报含敏感信息的错误,验证脱敏效果
+      agent.reportPageError({
+        source: 'network',
+        severity: 'error',
+        message: '登录失败: password=MySecret123 api_key=sk-proj-abc123 用户 admin@example.com 被拒绝',
+        details: {
+          url: '/api/login?token=eyJhbGciOiJSUzI1NiJ9.secret',
+          response: 'Bearer eyJhbGciOiJSUzI1NiJ9.eyJzdWIiOiJ0ZXN0In0.signature_here',
+          cardNumber: '4532-1234-5678-9012'
+        }
+      });
+      log('已上报含敏感信息的错误 → 查看 "详细信息" 确认 password/email/token/卡号 被 [REDACTED]');
+    });
+
+    document.getElementById('btn-err-dedupe').addEventListener('click', function () {
+      var before = agent.getPageErrors().length;
+      for (var i = 0; i < 5; i++) {
+        agent.reportPageError({ source: 'global', message: '去重测试: 这条错误完全一样' });
+      }
+      setTimeout(function () {
+        var after = agent.getPageErrors().length;
+        log('去重测试: 连发 5 次相同错误,缓冲区增长 ' + (after - before) + ' (应为 1,去重窗口 5 秒)');
+      }, 100);
+    });
+
+    document.getElementById('btn-err-batch').addEventListener('click', function () {
+      var before = agent.getPageErrors().length;
+      for (var i = 0; i < 10; i++) {
+        agent.reportPageError({ source: 'network', severity: i >= 8 ? 'critical' : 'warning', message: '批量错误 #' + (i + 1) + ': /api/resource-' + i + ' 返回 HTTP ' + (400 + i) });
+      }
+      setTimeout(function () {
+        var after = agent.getPageErrors().length;
+        log('批量错误: 触发 10 种不同错误,缓冲区增长 ' + (after - before));
+        log('  最后 2 条为 critical 级别,应触发角标');
+      }, 100);
+    });
+
+    document.getElementById('btn-err-critical').addEventListener('click', function () {
+      agent.reportPageError({
+        source: 'network',
+        severity: 'critical',
+        message: '数据库连接池耗尽,所有写入操作失败',
+        details: { pool: 'main-db', active: 100, max: 100 }
+      });
+      log('已上报 critical 级别错误 → 气泡应出现红色角标');
+      log('  如果浮窗已打开,还应看到主动系统消息(30 秒节流)');
+    });
+
+    document.getElementById('btn-err-report').addEventListener('click', function () {
+      agent.reportPageError({
+        source: 'network',
+        severity: 'error',
+        message: 'WebSocket 连接意外断开(code: 1006)',
+        details: { code: 1006, url: 'wss://example.com/ws' }
+      });
+      log('已手动 reportPageError (WebSocket 断开)');
+    });
+
+    document.getElementById('btn-err-list').addEventListener('click', function () {
+      var errors = agent.getPageErrors();
+      if (errors.length === 0) {
+        log('缓冲区为空,暂无捕获的错误');
+      } else {
+        log('共 ' + errors.length + ' 条错误 (缓冲区 ' + errors.length + '/50):');
+        errors.forEach(function (e, i) {
+          var flag = e.surfaced ? ' [已注入]' : '';
+          log('  ' + (i + 1) + '. [' + e.source + '/' + e.severity + '] ' + e.timestamp.substring(11, 19) + ' ' + e.message.substring(0, 60) + flag);
+        });
+      }
+    });
+
+    document.getElementById('btn-err-list-detail').addEventListener('click', function () {
+      var errors = agent.getPageErrors();
+      if (errors.length === 0) {
+        log('缓冲区为空');
+        return;
+      }
+      // 显示最后 3 条的完整 details(验证脱敏效果)
+      var last3 = errors.slice(-3);
+      log('最后 ' + last3.length + ' 条详细信息:');
+      last3.forEach(function (e, i) {
+        log('  --- #' + (errors.length - last3.length + i + 1) + ' ---');
+        log('  source: ' + e.source + ' | severity: ' + e.severity);
+        log('  message: ' + e.message);
+        var keys = Object.keys(e.details);
+        keys.forEach(function (k) {
+          var v = e.details[k];
+          if (typeof v === 'string') {
+            log('  details.' + k + ': ' + v.substring(0, 120));
+          }
+        });
+      });
+    });
+
+    document.getElementById('btn-err-clear').addEventListener('click', function () {
+      var before = agent.getPageErrors().length;
+      agent.clearPageErrors();
+      log('已清空错误缓冲区 (' + before + ' → 0)');
+    });
+
+    // ---- 5. AI 上下文注入端到端验证 ----
+    document.getElementById('btn-err-scenario').addEventListener('click', function () {
+      // 清空之前的错误
+      agent.clearPageErrors();
+      log('=== 端到端测试开始 ===');
+
+      // 1) fetch 500
+      fetch(MOCK + '/api/sim/500').catch(function () {});
+      log('1/3 已触发 fetch 500');
+
+      // 2) JS Error
+      setTimeout(function () { throw new Error('模拟: 订单页面渲染异常 - Cannot read properties of null'); }, 100);
+      log('2/3 已触发 JS Error (100ms 后)');
+
+      // 3) DOM Toast
+      setTimeout(function () {
+        showToast('el-message el-message--error', '库存查询失败: 服务端超时,请联系管理员');
+        log('3/3 已触发 Element UI 错误 Toast');
+      }, 200);
+
+      // 4) 打开浮窗
+      setTimeout(function () {
+        agent.open();
+        log('浮窗已打开 → 请发送任意消息(如"帮我录一单"),观察 AI 是否主动提及页面异常');
+        log('=== 提示:AI 收到的消息头部包含 [Page Context] 区块,但你发的消息在 UI 里不变 ===');
+      }, 500);
+    });
+
+    // ===== 5. 打开浮窗对话 =====
     document.getElementById('trigger-chat').addEventListener('click', function () {
       agent.open();
     });

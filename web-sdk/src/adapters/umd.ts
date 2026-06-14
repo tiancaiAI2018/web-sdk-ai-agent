@@ -26,7 +26,7 @@
  */
 
 import { AIAgent, createAIAgent } from '../core/agent';
-import { changeSkinTool, dictTool } from '../core/tools';
+import { changeSkinTool, dictTool, pageErrorsTool } from '../core/tools';
 import {
   IRIDESCENT_BLOOM,
   CLASSIC,
@@ -37,7 +37,7 @@ import {
   DEFAULT_LAYOUT,
 } from '../core/skin';
 import { loadFonts } from '../ui/fonts';
-import type { AIAgentOptions, ToolDef } from '../core/types';
+import type { AIAgentOptions, ToolDef, PageAwarenessOptions, PageError } from '../core/types';
 
 // IRIDESCENT BLOOM 主题 — 提前加载字体(Inter / JetBrains Mono / Fraunces)
 loadFonts();
@@ -56,6 +56,7 @@ const factory = createAIAgent();
   {
     changeSkinTool,
     dictTool,
+    pageErrorsTool,
     registerBuiltinTool: AIAgent.registerBuiltinTool,
     // 皮肤系统 — <script> 用户可直接 AIAgent.IRIDESCENT_BLOOM / AIAgent.deriveSkin(...)
     IRIDESCENT_BLOOM,
@@ -80,4 +81,4 @@ console.info(
 );
 
 export default factory;
-export type { AIAgentOptions };
+export type { AIAgentOptions, PageAwarenessOptions, PageError };

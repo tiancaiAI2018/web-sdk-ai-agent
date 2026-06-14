@@ -96,6 +96,8 @@ export class Widget {
   private _toolPanelEl: HTMLDivElement | null = null;
   /** 工具面板是否展开 */
   private _toolPanelOpen = false;
+  /** 页面感知错误角标(气泡上的红色数字) */
+  private _errorBadge: HTMLSpanElement | null = null;
 
   constructor(
     private readonly opts: WidgetOpts,
@@ -168,6 +170,12 @@ export class Widget {
     bubble.addEventListener('click', () => this.toggle());
     shadow.appendChild(bubble);
     this.bubble = bubble;
+
+    // 5a. 页面感知错误角标(附在气泡右上角,默认隐藏)
+    const badge = document.createElement('span');
+    badge.className = 'aiagent-sdk-error-badge';
+    bubble.appendChild(badge);
+    this._errorBadge = badge;
 
     // 5. 面板
     const panel = document.createElement('div');
@@ -429,6 +437,8 @@ export class Widget {
     if (!this.panel) return;
     this.panel.classList.add('aiagent-sdk-open');
     this.isOpen = true;
+    // 打开面板时隐藏错误角标(用户已在交互)
+    this.setErrorBadge(0);
     setTimeout(() => {
       if (this.taEl) this.taEl.focus();
     }, 50);
@@ -457,6 +467,18 @@ export class Widget {
 
   clearMessages(): void {
     if (this.msgEl) this.msgEl.innerHTML = '';
+  }
+
+  /** 设置错误角标数字(0 或负数隐藏) */
+  setErrorBadge(count: number): void {
+    if (!this._errorBadge) return;
+    if (count <= 0 || this.isOpen) {
+      this._errorBadge.style.display = 'none';
+      this._errorBadge.textContent = '';
+    } else {
+      this._errorBadge.textContent = count > 99 ? '99+' : String(count);
+      this._errorBadge.style.display = 'flex';
+    }
   }
 
   /**

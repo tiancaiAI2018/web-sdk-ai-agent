@@ -913,4 +913,29 @@ export const CLASSIC_CSS = `
   margin: 0.4em 0;
   display: block;
 }
+
+/* ================================================================
+   页面感知错误角标(附在气泡右上角)
+   ================================================================ */
+.aiagent-sdk-error-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--aia-error, #ef4444);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  z-index: 1;
+  box-shadow: 0 2px 4px rgba(239, 68, 68, 0.3);
+  font-family: system-ui, sans-serif;
+  line-height: 1;
+  pointer-events: none;
+}
 `;

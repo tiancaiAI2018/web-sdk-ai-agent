@@ -27,6 +27,7 @@ export {
   resumePendingToolResults,
   changeSkinTool,
   dictTool,
+  pageErrorsTool,
   type ToolCtx,
   type DictToolOptions,
 } from './core/tools';
@@ -50,6 +51,8 @@ export {
   DEFAULT_LAYOUT,
 } from './core/skin';
 export type { Skin, SkinLayout, Palette } from './core/skin';
+export { PageAwareness } from './core/page-awareness';
+export type { PageAwarenessHost } from './core/page-awareness';
 
 // 类型导出
 export type {
@@ -66,4 +69,8 @@ export type {
   UnregisterToolsOptions,
   ListToolsOptions,
   ToolPanelItem,
+  PageAwarenessOptions,
+  PageError,
+  PageErrorSource,
+  PageErrorSeverity,
 } from './core/types';

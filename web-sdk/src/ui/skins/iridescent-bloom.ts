@@ -1656,4 +1656,29 @@ export const IRIDESCENT_BLOOM_CSS = `
 .aiagent-sdk-tp-on .aiagent-sdk-tp-label {
   color: var(--aia-text);
 }
+
+/* ================================================================
+   页面感知错误角标(附在气泡右上角)
+   ================================================================ */
+.aiagent-sdk-error-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 18px;
+  height: 18px;
+  border-radius: 9px;
+  background: var(--aia-error, #f87171);
+  color: #fff;
+  font-size: 11px;
+  font-weight: 600;
+  display: none;
+  align-items: center;
+  justify-content: center;
+  padding: 0 4px;
+  z-index: 1;
+  box-shadow: 0 2px 6px rgba(248, 113, 113, 0.4);
+  font-family: system-ui, sans-serif;
+  line-height: 1;
+  pointer-events: none;
+}
 `;
