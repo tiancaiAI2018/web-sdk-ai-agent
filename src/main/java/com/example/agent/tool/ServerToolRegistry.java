@@ -28,6 +28,21 @@ public class ServerToolRegistry {
         return repo.findByEnabledTrue();
     }
 
+    /**
+     * 返回指定渠道已启用的服务端工具 + 平台内置工具(ownerId 为空)。
+     * 第三方渠道只能看到自己的工具和平台公共工具,不能看到其他渠道的。
+     */
+    public List<ServerTool> findEnabledByOwner(String clientId) {
+        List<ServerTool> result = new java.util.ArrayList<>();
+        // 平台内置工具(ownerId 为空)
+        result.addAll(repo.findByEnabledTrueAndOwnerIdIsNull());
+        // 该渠道的工具
+        if (clientId != null && !clientId.isBlank()) {
+            result.addAll(repo.findByEnabledTrueAndOwnerId(clientId));
+        }
+        return result;
+    }
+
     /** 按名称查找 */
     public Optional<ServerTool> findByName(String name) {
         return repo.findByName(name);

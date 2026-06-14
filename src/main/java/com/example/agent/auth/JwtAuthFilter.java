@@ -110,11 +110,15 @@ public class JwtAuthFilter implements WebFilter {
             }
         }
 
-        exchange.getAttributes().put(
-            AuthPrincipal.ATTR,
-            new AuthPrincipal(verified.clientId(), verified.jti(), verified.scope())
-        );
-        return chain.filter(exchange);
+        AuthPrincipal principal = new AuthPrincipal(verified.clientId(), verified.jti(), verified.scope());
+
+        // 写入 exchange.attributes:Controller 层可通过 principalOf(exchange) 获取
+        exchange.getAttributes().put(AuthPrincipal.ATTR, principal);
+
+        // 写入 Reactor Context:Service 层可通过 SecurityContext.clientId(ctx) 获取
+        // 两种方式并存,确保任何层级都能拿到认证信息
+        return chain.filter(exchange)
+            .contextWrite(ctx -> SecurityContext.withPrincipal(ctx, principal));
     }
 
     private Mono<Void> reject(ServerWebExchange exchange, String code, HttpStatus status) {

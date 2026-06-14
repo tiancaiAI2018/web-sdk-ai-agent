@@ -1,6 +1,7 @@
 package com.example.agent.session;
 
 import com.example.agent.config.AgentProperties;
+import com.example.agent.auth.SecurityContext;
 import com.example.agent.extract.RegisteredTool;
 import com.example.agent.extract.NoPendingToolException;
 import com.example.agent.extract.StreamBlockedException;
@@ -77,10 +78,15 @@ public class SessionManager {
     }
 
     /**
-     * 兼容旧调用:纯聊天,无工具。
+     * 兼容旧调用:纯聊天,无工具(管理端使用,加载全部服务端工具)。
      */
     public ReActAgent getOrCreate(String sessionId) {
-        return getOrCreate(sessionId, List.of());
+        return getOrCreate(sessionId, List.of(), null);
+    }
+
+    /** 兼容旧调用:无 clientId(管理端使用,加载全部服务端工具)。 */
+    public ReActAgent getOrCreate(String sessionId, List<String> activeTools) {
+        return getOrCreate(sessionId, activeTools, null);
     }
 
     /**
@@ -89,18 +95,20 @@ public class SessionManager {
      *
      * @param sessionId   已 sanitize 的 sessionId
      * @param activeTools 此次激活的工具名;null/空 = 纯聊天
+     * @param clientId    当前请求的渠道 ID(从 SecurityContext 获取),用于按渠道过滤服务端工具;
+     *                    null 则加载全部工具(管理端场景)
      */
-    public ReActAgent getOrCreate(String sessionId, List<String> activeTools) {
+    public ReActAgent getOrCreate(String sessionId, List<String> activeTools, String clientId) {
         String safe = sanitize(sessionId);
         List<String> want = activeTools == null ? List.of() : activeTools;
-        return build(safe, want);
+        return build(safe, want, clientId);
     }
 
     /**
      * 每次 build 新 agent,绕开 AgentScope "toolkit 不可改" 限制。
      * 旧 agent 仍在 map 里(下一次 getOrCreate 直接覆盖,GC 自动收)。
      */
-    private ReActAgent build(String sessionId, List<String> activeTools) {
+    private ReActAgent build(String sessionId, List<String> activeTools, String clientId) {
         // 从 registry 拿 SDK 工具
         List<RegisteredTool> tools = toolRegistry.get(sessionId, activeTools);
 
@@ -118,7 +126,11 @@ public class SessionManager {
         }
 
         // 注册服务端工具(通过 AgentTool 接口,LLM 调用时自动执行)
-        List<ServerTool> serverTools = serverToolRegistry.findAllEnabled();
+        // 只加载该 token 渠道(ownerId)的工具 + 平台内置工具(ownerId 为空)
+        // clientId 由 Controller 从 AuthPrincipal 获取后传入,不在这里从 sessionId 解析
+        List<ServerTool> serverTools = clientId != null
+            ? serverToolRegistry.findEnabledByOwner(clientId)
+            : serverToolRegistry.findAllEnabled();
         if (!serverTools.isEmpty()) {
             if (toolkit == null) toolkit = new Toolkit();
             for (ServerTool st : serverTools) {
@@ -156,20 +168,24 @@ public class SessionManager {
             .build();
     }
 
-    /** Blocking call + persist. */
+    /** Blocking call + persist. clientId 自动从 Reactor Context(SecurityContext)获取。 */
     public Mono<Msg> call(String sessionId, String text) {
-        ReActAgent agent = getOrCreate(sessionId, List.of());
-        Msg userMsg = userMessage(text);
-        return Mono.fromFuture(agent.call(userMsg).toFuture())
-            .doOnNext(resp -> {
-                agent.saveTo(session, sessionId);
-                log.debug("Session {} saved ({} chars)", sessionId,
-                    resp.getTextContent() == null ? 0 : resp.getTextContent().length());
-            });
+        return Mono.deferContextual(ctx -> {
+            String clientId = SecurityContext.clientId(ctx);
+            ReActAgent agent = getOrCreate(sessionId, List.of(), clientId);
+            Msg userMsg = userMessage(text);
+            return Mono.fromFuture(agent.call(userMsg).toFuture())
+                .doOnNext(resp -> {
+                    agent.saveTo(session, sessionId);
+                    log.debug("Session {} saved ({} chars)", sessionId,
+                        resp.getTextContent() == null ? 0 : resp.getTextContent().length());
+                });
+        });
     }
 
     /**
      * 流式 + 工具激活。tools 为空 = 纯聊天。
+     * clientId 自动从 Reactor Context(SecurityContext)获取,按渠道过滤服务端工具。
      *
      * <p>如果流末尾是 TOOL_SUSPENDED(schema-only 工具被 LLM 触发,等待外部
      * SDK 回传结果),agent 移入 {@code suspendedAgents},<b>不</b> saveTo。
@@ -177,16 +193,19 @@ public class SessionManager {
      * <p>服务端工具调用不会触发 TOOL_SUSPENDED,而是由 ServerToolExecutor 直接执行。
      */
     public Flux<Event> stream(String sessionId, String text, List<String> activeTools) {
-        String safe = sanitize(sessionId);
+        return Flux.deferContextual(ctx -> {
+            String clientId = SecurityContext.clientId(ctx);
+            String safe = sanitize(sessionId);
 
-        if (suspendedAgents.containsKey(safe)) {
-            return Flux.error(new StreamBlockedException(safe));
-        }
+            if (suspendedAgents.containsKey(safe)) {
+                return Flux.error(new StreamBlockedException(safe));
+            }
 
-        ReActAgent agent = getOrCreate(safe, activeTools);
-        Msg userMsg = userMessage(text);
-        Flux<Event> eventFlux = agent.stream(List.of(userMsg), StreamOptions.defaults());
-        return withSuspensionDetection(eventFlux, safe, agent, "stream");
+            ReActAgent agent = getOrCreate(safe, activeTools, clientId);
+            Msg userMsg = userMessage(text);
+            Flux<Event> eventFlux = agent.stream(List.of(userMsg), StreamOptions.defaults());
+            return withSuspensionDetection(eventFlux, safe, agent, "stream");
+        });
     }
 
     /**

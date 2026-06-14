@@ -4,52 +4,82 @@
 
 ---
 
-## 🤖 Claude Code 速查(给未来 AI 实例)
+## AGENTS.md
 
-> **本节是 codebase 入口**。任何不熟悉的实现细节,**先 grep / Read** 再下结论。CLAUDE.md 里另有工作准则。
+This file provides guidance to the AI agent when working with code in this repository.
 
-### 一句话架构
+### 工作准则
 
-`ChatModelBase` (单例) + `SessionManager`(每 sid 一个 ReActAgent,基于 Toolkit + JsonSession) + `JwtAuthFilter`(唯一鉴权入口 + namespace 强制) + `ToolRegistry`(v3:第三方注册工具,30 分钟 TTL)。
+1. **先想后写**:动手前明确假设;有多种解读时列出来,不要默默挑一种。
+2. **最简优先**:只解决当前问题,不加未要求的功能、抽象、容错。200 行能用 50 行写就重写。
+3. **精准改动**:只改必须改的;不动相邻代码/注释/格式;匹配已有风格;自己造成的孤立引用要清理,已有的死代码不动。
+4. **目标驱动**:把任务转化为可验证目标,多步任务先列 `1. [步骤] → 验证: [检查]` 再执行。
 
-### 5 个不要破坏的不变量
+### 架构不变量(不要破坏)
+
+`ChatModelBase`(单例) + `SessionManager`(每 sid 一个 ReActAgent,基于 Toolkit + JsonSession) + `JwtAuthFilter`(唯一鉴权入口 + namespace 强制) + `ToolRegistry`(v3:第三方注册工具,30 分钟 TTL)。
 
 1. **sessionId 必须以 `{clientId}:` 开头**。`JwtAuthFilter` 强制,违规 400 + 审计 `CROSS_TENANT_ACCESS`。
 2. **API key 永远从 `ANTHROPIC_API_KEY` 环境变量来**。yml 是 `${ANTHROPIC_API_KEY:}` 空默认,写死即事故。
-3. **`ReActAgent` 不能跨 stream 复用**。v3 因 AgentScope 1.0.12 `Toolkit` build() 后不可改,**每次 stream 都 new 一个**。记忆靠 `JsonSession` 持久化保留(见 `SessionManager.build` 注释)。
-4. **`JwtAuthFilter` 是唯一鉴权入口**。新增需鉴权端点必须经过它,只把白名单前缀数组扩展;不要绕开。
-5. **`description` 走 `DescriptionGuard` 黑名单**。工具 description 直接进 sysPrompt,任一注入特征("ignore the above"、"system:"、`<|im_start|>` 等)即拒。**P0**:接真实第三方前必须升级到小 LLM 二次审核。
+3. **`ReActAgent` 不能跨 stream 复用**。AgentScope 1.0.12 `Toolkit` build() 后不可改,**每次 stream 都 new 一个**。记忆靠 `JsonSession` 持久化保留。
+4. **`JwtAuthFilter` 是唯一鉴权入口**。新增需鉴权端点必须经过它,只扩展白名单前缀数组;不要绕开。
+5. **`description` 走 `DescriptionGuard` 黑名单**。工具 description 直接进 sysPrompt,任一注入特征即拒。
 
-### 关键 Bean 与构造点
+### 关键入口
+
+| 想找 | 入口 |
+|---|---|
+| 路由总表 | `controller/ChatController.java` + `controller/ToolController.java` + `auth/AuthController.java` + `admin/AdminController.java`(都有 `@Tag`) |
+| namespace 强制 | `auth/JwtAuthFilter.java:88-100` |
+| stream 帧格式 | `controller/ChatController.java:120-175`(`toSse`) |
+| 工具 schema 校验 | `extract/RegisteredTool.java` + `extract/DescriptionGuard.java` |
+| ReActAgent 构造 | `session/SessionManager.java:84-112`(`build`) |
+| AgentScope 真实类名 | `jar tf ~/.m2/repository/io/agentscope/agentscope/1.0.12/agentscope-1.0.12.jar \| grep -E "ChatModel\|Event\|StreamOptions"` |
+
+### 关键 Bean
 
 | 单例 | 出处 | 谁注入它 |
 |---|---|---|
 | `ChatModelBase` (Anthropic 或 OpenAI) | `AgentConfig`(`@ConditionalOnProperty enable`) | `SessionManager` |
 | `Session`(`JsonSession`) | `AgentConfig` | `SessionManager` |
-| `ToolRegistry`(按 sid 索引) | `extract/`(无 @Configuration,直接 `@Component`) | `SessionManager`, `ToolController`, `ToolRegistryCleaner` |
+| `ToolRegistry`(按 sid 索引) | `extract/`(直接 `@Component`) | `SessionManager`, `ToolController`, `ToolRegistryCleaner` |
 | `ToolSchemaFactory` | `extract/` | `SessionManager`(每次 build 新 Toolkit 时用) |
 
 `SessionManager.build` 是唯一造 `ReActAgent` 的地方。`ChatController` 写薄,只做参数校验 + SSE 翻译。
 
-### v2 → v3 增量(代码里已经做了,README 部分章节还停在 v2)
+### 构建与运行
 
-- **多模型**:`agentscope.openai.*` 段(`@ConditionalOnProperty agentscope.openai.enable`),`AnthropicChatModel` 和 `OpenAIChatModel` 可独立开关
-- **第三方工具 schema 注入**:`POST /chat/{sid}/tools/register` 把 JSON Schema 注册到 `ToolRegistry`,`{message, activeTools:["name1"]}` 在 stream 时激活
-- **流式 `event: tool_call` 帧**:`ChatController.toSse` 检测 `ToolUseBlock` 时多推一帧 `{"tool":"name","args":{...}}`
-- **SDK Markdown 渲染 + 浮窗**:`static/sdk/ai-agent-sdk.js` + `static/sdk/vendor/`(marked + DOMPurify)
-- **Prompt-injection 黑名单**:`DescriptionGuard.INJECTION_PATTERNS` 6 条正则,MVP 阶段,接真实第三方前必须升级
-- **`@EnableScheduling` + `ToolRegistryCleaner`**:每 5 分钟清 30 分钟无活动的 sid,同步 `SessionManager.evict(sid)`
+Maven 路径(Windows Git Bash 不在 PATH):`D:/dev-tools/apache-maven-3.9.14/bin/mvn`
 
-### 找东西的入口
+```bash
+"D:/dev-tools/apache-maven-3.9.14/bin/mvn" -B -DskipTests package   # 编译打 jar
+"D:/dev-tools/apache-maven-3.9.14/bin/mvn" -B spring-boot:run        # 启动(改完代码需手动重启)
+"D:/dev-tools/apache-maven-3.9.14/bin/mvn" -B test                   # 跑全部测试
+"D:/dev-tools/apache-maven-3.9.14/bin/mvn" -B -Dtest=ClassName test  # 跑单个测试类
+rm -rf data/ ~/.agentscope/                                           # 重置 demo 数据
+```
 
-| 想找 | 入口 |
-|---|---|
-| 路由总表 | `controller/ChatController.java` + `controller/ToolController.java` + `auth/AuthController.java` + `admin/AdminController.java`(都有 `@Tag`) |
-| "v2 namespace 是怎么强制" | `auth/JwtAuthFilter.java:88-100` |
-| "stream 帧格式怎么定" | `controller/ChatController.java:120-175`(`toSse`) |
-| "工具 schema 校验规则" | `extract/RegisteredTool.java:validateName / validateParameters` + `extract/DescriptionGuard.java` |
-| "ReActAgent 怎么 new" | `session/SessionManager.java:84-112`(`build`) |
-| AgentScope 真实类名(文档不全) | `jar tf ~/.m2/repository/io/agentscope/agentscope/1.0.12/agentscope-1.0.12.jar \| grep -E "ChatModel\|Event\|StreamOptions"` |
+- API key 设置:`setx ANTHROPIC_API_KEY "sk-xxx"`(只影响新进程,改完必须重启 Spring Boot)
+- 本地覆盖用 `application-local.yml`(gitignored),不要改 `application.yml` 里的 key 占位符
+- AgentScope 文档不全,类签名不确定时 `jar tf` + `javap -public` 比猜快
+
+### 代码风格与约定
+
+- 中文注释、中文 commit message
+- `ChatController` 写薄,只做参数校验 + SSE 翻译;业务逻辑往上挪到 `SessionManager`
+- WebFlux 项目,不要用 Servlet API(`HttpServletRequest` 不可用,用 `ServerHttpRequest`)
+- `ReActAgent` 默认 `checkRunning=true` 拒绝并发,这是预期的,不要关掉
+- `@EnableScheduling` + `ToolRegistryCleaner` 每 5 分钟清 30 分钟无活动的 sid
+
+### 非显而易见的坑
+
+- 基类叫 `ChatModelBase`,不是 `ChatModel`;`Event` / `StreamOptions` 在 `io.agentscope.core.agent.*` 子包
+- `com.anthropic:anthropic-java` 不被 Spring Boot BOM 管理,`<version>` 不能省
+- `JsonSession` 把 `sessionId` 当目录名,白名单 `[A-Za-z0-9_\-:]{1,128}`
+- 流式端点是 `POST` 不是 `GET`,body 传消息;HTTP header 是 ISO-8859-1 不能放中文
+- `sessionId` 经 `encodeURIComponent` 后 `:` → `%3A`,filter 必须 `URLDecoder.decode` 再做 namespace 比对
+- 第一次请求某个 session 很慢(10-60s),懒构造,不要加"预热"
+- 跨域 POST + 自定义 header 必触发 OPTIONS 预检,鉴权 filter 必须放行 OPTIONS
 
 ---
 
