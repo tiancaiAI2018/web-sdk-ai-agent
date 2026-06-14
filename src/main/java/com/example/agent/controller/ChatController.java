@@ -10,13 +10,17 @@ import com.example.agent.session.SessionManager;
 import com.fasterxml.jackson.core.JsonProcessingException;
 import com.fasterxml.jackson.databind.ObjectMapper;
 import io.agentscope.core.agent.Event;
+import io.agentscope.core.agent.EventType;
 import io.agentscope.core.message.ContentBlock;
 import io.agentscope.core.message.Msg;
 import io.agentscope.core.message.ThinkingBlock;
+import io.agentscope.core.message.ToolResultBlock;
 import io.agentscope.core.message.ToolUseBlock;
 import io.swagger.v3.oas.annotations.Operation;
 import io.swagger.v3.oas.annotations.security.SecurityRequirement;
 import io.swagger.v3.oas.annotations.tags.Tag;
+import org.slf4j.Logger;
+import org.slf4j.LoggerFactory;
 import org.springframework.http.MediaType;
 import org.springframework.http.ResponseEntity;
 import org.springframework.http.codec.ServerSentEvent;
@@ -33,10 +37,12 @@ import reactor.core.publisher.Mono;
 import java.nio.charset.StandardCharsets;
 import java.security.MessageDigest;
 import java.security.NoSuchAlgorithmException;
+import java.util.ArrayList;
 import java.util.HexFormat;
 import java.util.List;
 import java.util.Map;
 import java.util.Objects;
+import java.util.concurrent.ConcurrentHashMap;
 
 /**
  * Two endpoints:
@@ -53,9 +59,43 @@ import java.util.Objects;
 @SecurityRequirement(name = "bearer-jwt")
 public class ChatController {
 
+    private static final Logger log = LoggerFactory.getLogger(ChatController.class);
     private final SessionManager sessions;
     private final AuditService audit;
     private final ObjectMapper mapper = new ObjectMapper();
+
+    /**
+     * 追踪一个正在进行中的工具调用(从 tool_call_start 到 tool_call_end)。
+     * 支持多工具并发:LLM 可能在一次回复中调用多个工具,每个工具独立追踪。
+     */
+    static class PendingToolCall {
+        final String id;
+        final String name;
+        // 流式增量参数(AgentTool 模式下 ToolUseBlock.input 为空,参数通过 content 增量推送)
+        final StringBuilder content = new StringBuilder();
+        // isLast=true 帧提供的完整 args(优先级高于 content 累积)
+        String completeArgs;
+
+        PendingToolCall(String id, String name) {
+            this.id = id;
+            this.name = name;
+        }
+
+        /** 获取最终 args JSON:completeArgs 优先,否则从累积 content 解析 */
+        String getArgsJson(ObjectMapper mapper) {
+            if (completeArgs != null) return completeArgs;
+            String accumulated = content.toString().trim();
+            if (!accumulated.isEmpty()) {
+                try {
+                    Object parsed = mapper.readTree(accumulated);
+                    return mapper.writeValueAsString(parsed);
+                } catch (Exception e) {
+                    return accumulated;
+                }
+            }
+            return "{}";
+        }
+    }
 
     public ChatController(SessionManager sessions, AuditService audit) {
         this.sessions = sessions;
@@ -110,11 +150,38 @@ public class ChatController {
         List<String> active = body.activeTools() == null ? List.of() : body.activeTools();
         audit.logChatStart(p.clientId(), p.jti(), sessionId, active, ip);
 
-        // AgentScope 1.0.12 在流末尾会推多个 isLast=true 的 Event。last 帧只推一次。
-        java.util.concurrent.atomic.AtomicBoolean lastEmitted = new java.util.concurrent.atomic.AtomicBoolean(false);
+        // 追踪所有进行中的工具调用,支持多工具并发(LLM 可能一次调用多个工具)
+        // key = toolUseId, value = PendingToolCall
+        final ConcurrentHashMap<String, PendingToolCall> pendingTools = new ConcurrentHashMap<>();
 
         return sessions.stream(sessionId, body.message(), active)
-            .flatMap(event -> toSse(event, p, sessionId, ip, lastEmitted))
+            .flatMap(event -> toSse(event, p, sessionId, ip, pendingTools))
+            // 流结束后:1)为剩余的前端工具(TOOL_SUSPENDED)补发 tool_call_end + tool_call
+            //          2)追加 id:last 哨兵帧,前端以此判断流结束
+            .concatWith(Flux.defer(() -> {
+                List<ServerSentEvent<String>> finalFrames = new ArrayList<>();
+                for (PendingToolCall ptc : pendingTools.values()) {
+                    // 前端工具:agent 已 TOOL_SUSPENDED,需 SDK 执行 onCall + POST /tools/result
+                    String argsJson = ptc.getArgsJson(mapper);
+                    finalFrames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call_end")
+                        .data("{\"id\":\"" + ptc.id + "\",\"name\":\"" + ptc.name + "\"}")
+                        .build());
+                    finalFrames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call")
+                        .data("{\"id\":\"" + ptc.id + "\",\"tool\":\"" + ptc.name
+                            + "\",\"args\":" + argsJson + "}")
+                        .build());
+                    // audit
+                    String argsHash = sha256Short(argsJson);
+                    try { audit.logFormSubmit(p.clientId(), p.jti(), sessionId, ptc.name, argsHash, ip); }
+                    catch (Exception ignored) {}
+                }
+                pendingTools.clear();
+                // 哨兵帧:前端 SSE 解析器通过 id:last 判断流结束
+                finalFrames.add(ServerSentEvent.<String>builder().id("last").data("").build());
+                return Flux.fromIterable(finalFrames);
+            }))
             .doOnComplete(() -> audit.logChatDone(p.clientId(), p.jti(), sessionId, ip));
     }
 
@@ -141,11 +208,27 @@ public class ChatController {
         AuthPrincipal p = principalOf(exchange);
         String ip = AuditService.extractIp(exchange.getRequest());
         audit.logToolResult(p.clientId(), p.jti(), sessionId, body.toolUseId(), ip);
-        // 新的 stream 一次"last" 帧只推一次
-        java.util.concurrent.atomic.AtomicBoolean lastEmitted =
-            new java.util.concurrent.atomic.AtomicBoolean(false);
+        final ConcurrentHashMap<String, PendingToolCall> pendingTools = new ConcurrentHashMap<>();
         return sessions.resume(sessionId, body.toolUseId(), body.result())
-            .flatMap(event -> toSse(event, p, sessionId, ip, lastEmitted));
+            .flatMap(event -> toSse(event, p, sessionId, ip, pendingTools))
+            .concatWith(Flux.defer(() -> {
+                List<ServerSentEvent<String>> finalFrames = new ArrayList<>();
+                for (PendingToolCall ptc : pendingTools.values()) {
+                    String argsJson = ptc.getArgsJson(mapper);
+                    finalFrames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call_end")
+                        .data("{\"id\":\"" + ptc.id + "\",\"name\":\"" + ptc.name + "\"}")
+                        .build());
+                    finalFrames.add(ServerSentEvent.<String>builder()
+                        .event("tool_call")
+                        .data("{\"id\":\"" + ptc.id + "\",\"tool\":\"" + ptc.name
+                            + "\",\"args\":" + argsJson + "}")
+                        .build());
+                }
+                pendingTools.clear();
+                finalFrames.add(ServerSentEvent.<String>builder().id("last").data("").build());
+                return Flux.fromIterable(finalFrames);
+            }));
     }
 
     /**
@@ -166,31 +249,41 @@ public class ChatController {
     }
 
     /**
-     * 把单个 AgentScope Event 翻译成 1~N 个 SSE 帧。工具调用时**额外**推一个
-     * event: tool_call 帧,data 含 tool 名 + args(JSON)。
+     * 把单个 AgentScope Event 翻译成 1~N 个 SSE 帧。
      *
-     * @param lastEmitted 整个流里 id:last 帧只能推一次
+     * <p>核心设计:ReAct 模式下,一个 stream 包含多轮 LLM 调用:
+     * <pre>
+     *   REASONING(isLast=false) → ToolUseBlock 增量推送(tool_call_start / tool_call_delta)
+     *   REASONING(isLast=true)  → 当前 LLM 调用结束,ToolUseBlock 参数完整
+     *   TOOL_RESULT             → 服务端工具(AgentTool)执行完毕,ToolResultBlock 出现
+     *   REASONING(isLast=false) → 下一轮 LLM 推理开始
+     *   ...
+     *   REASONING(isLast=true)  → 最终回复
+     * </pre>
+     *
+     * <p>关键规则:
+     * <ul>
+     *   <li>REASONING 帧中的 ToolUseBlock:只发 tool_call_start / tool_call_delta,不发 tool_call_end + tool_call</li>
+     *   <li>TOOL_RESULT 帧中的 ToolResultBlock:发 tool_call_end + tool_call(server_executed=true)</li>
+     *   <li>流结束时,remaining pendingTools 是前端工具(TOOL_SUSPENDED),由调用方补发 tool_call_end + tool_call</li>
+     *   <li>id:last 只在哨兵帧设置,不在中间帧设置,避免前端误判流结束</li>
+     * </ul>
      */
     private Flux<ServerSentEvent<String>> toSse(Event event, AuthPrincipal p,
                                                 String sessionId, String ip,
-                                                java.util.concurrent.atomic.AtomicBoolean lastEmitted) {
+                                                ConcurrentHashMap<String, PendingToolCall> pendingTools) {
 
         Msg msg = event.getMessage();
+        log.info("[toSse] type={} isLast={} msg={} reason={}", event.getType(), event.isLast(),
+            msg == null ? "null" : msg.getContent(),msg == null ? null :msg.getGenerateReason());
 
-        // isLast 帧去重:AgentScope 1.0.12 会在流末尾推多个 isLast=true,只让第一个推 id:last
-        boolean isLastForReal = event.isLast() && lastEmitted.compareAndSet(false, true);
-        if (event.isLast() && !isLastForReal) {
-            return Flux.empty();
-        }
+        List<ServerSentEvent<String>> frames = new ArrayList<>();
 
-        // === 关键修复:遍历 msg 里的所有 block 一起推 ===
-        // last 帧可能同时含 ThinkingBlock + TextBlock + ToolUseBlock(全在一 msg.content 里),
-        // 老逻辑"看到 thinking 就 return"会丢掉 tool_call → SDK onCall 永不触发。
-        // 现在:把每种 block 各自构造一帧,统一进 List 一起返回。
-        java.util.List<ServerSentEvent<String>> frames = new java.util.ArrayList<>();
-
-        // 1) ThinkingBlock → thinking 帧(可能多个,每个都推)
-        if (msg != null) {
+        // 1) ThinkingBlock → thinking 帧
+        // 跳过 isLast=true 帧的 ThinkingBlock:AgentScope 在 isLast=true 帧中会包含
+        // 完整的思考文本(与前面 isLast=false 增量帧的内容完全重复),前端已累积了增量内容,
+        // 再发完整文本会导致重复显示
+        if (msg != null && !event.isLast()) {
             try {
                 List<ThinkingBlock> thinkBlocks = msg.getContentBlocks(ThinkingBlock.class);
                 if (thinkBlocks != null) {
@@ -199,7 +292,6 @@ public class ChatController {
                         if (t == null) t = "";
                         frames.add(ServerSentEvent.<String>builder()
                             .event("thinking")
-                            .id(isLastForReal ? "last" : null)
                             .data(t.replace("\n", "\\n").replace("\r", ""))
                             .build());
                     }
@@ -207,89 +299,142 @@ public class ChatController {
             } catch (Exception ignored) {}
         }
 
-        // 2) TextBlock → main 帧(有内容才推,避免空字符串干扰前端)
-        String text = msg == null ? null : msg.getTextContent();
-        if (text != null && !text.isEmpty()) {
-            String type = event.getType().name().toLowerCase();
-            ServerSentEvent<String> main = ServerSentEvent.<String>builder()
-                    .event(type)
-                    .id(isLastForReal ? "last" : null)
-                    .data(text.replace("\n", "\\n").replace("\r", ""))
-                    .build();
-            frames.add(main);
-        }
-
-
-        // 3) ToolUseBlock → 推 tool_call(中间帧→ delta; last 帧→ 完整)
-        List<ToolUseBlock> toolUses = null;
-        if (msg != null) {
-            try {
-                toolUses = msg.getContentBlocks(ToolUseBlock.class);
-            } catch (Exception ignored) {}
-        }
-        if (toolUses != null && !toolUses.isEmpty()) {
-            // 一次只取第一个(录单场景模型一次只调一个工具)
-            ToolUseBlock tu = toolUses.get(0);
-            String toolId = tu.getId() == null ? "" : tu.getId();
-            String toolName = tu.getName() == null ? "" : tu.getName();
-
-            if (!event.isLast()) {
-                // 中间帧:content 非空就推 tool_call_delta
-                String content = tu.getContent() == null ? "" : tu.getContent();
-                if (!content.isEmpty()) {
-                    String frag = "{\"id\":\"" + toolId + "\",\"name\":\"" + toolName
-                        + "\",\"delta\":\"" + jsonEscape(content) + "\"}";
-                    frames.add(ServerSentEvent.<String>builder()
-                        .event("tool_call_delta")
-                        .data(frag)
-                        .build());
-                }else{
-                    String frag = "{\"id\":\"" + toolId + "\",\"name\":\"" + toolName+ "\"}";
-                    frames.add(ServerSentEvent.<String>builder()
-                            .event("tool_call_start")
-                            .data(frag)
-                            .build());
-                }
-            } else {
+        // 2) TextBlock → reasoning / tool_result 帧(有内容才推)
+        if (msg != null && !event.isLast()) {
+            String text = msg.getTextContent();
+            if (text != null && !text.isEmpty()) {
                 frames.add(ServerSentEvent.<String>builder()
-                        .event("tool_call_end")
-                        .data(null)
+                        .event("text")
+                        .data(text.replace("\n", "\\n").replace("\r", ""))
                         .build());
-                // last 帧:推完整 tool_call(args 三级兜底)
-                String argsJson;
-                if (tu.getInput() != null && !tu.getInput().isEmpty()) {
-                    try { argsJson = mapper.writeValueAsString(tu.getInput()); }
-                    catch (JsonProcessingException e) { argsJson = "{}"; }
-                } else if (tu.getContent() != null && !tu.getContent().isEmpty()) {
-                    String raw = tu.getContent();
-                    try {
-                        Object parsed = mapper.readTree(raw);
-                        argsJson = mapper.writeValueAsString(parsed);
-                    } catch (Exception e) {
-                        argsJson = raw;
-                    }
-                } else {
-                    argsJson = "{}";
-                }
-                String data = "{\"id\":\"" + toolId
-                    + "\",\"tool\":\"" + toolName
-                    + "\",\"args\":" + argsJson + "}";
-                // audit
-                String argsHash = sha256Short(argsJson);
-                try {
-                    audit.logFormSubmit(p.clientId(), p.jti(), sessionId, toolName, argsHash, ip);
-                } catch (Exception ignored) {}
-                // id:last 挂在 tool_call 帧上(纯 tool 场景,main 不存在,tool_call 自带)
-                frames.add(ServerSentEvent.<String>builder()
-                    .event("tool_call")
-                    .id(isLastForReal ? "last" : null)
-                    .data(data)
-                    .build());
             }
         }
-        // 全部推完;没东西就返空
-        if (frames.isEmpty()) return Flux.empty();
-        return Flux.fromIterable(frames);
+
+        // 3) ToolResultBlock → 服务端工具(AgentTool)执行完毕
+        // 发 tool_call_end + tool_call(server_executed=true),并从 pendingTools 中移除
+        if (msg != null) {
+            try {
+                List<ToolResultBlock> toolResults = msg.getContentBlocks(ToolResultBlock.class);
+                if (toolResults != null) {
+                    for (ToolResultBlock tr : toolResults) {
+                        String resultToolId = tr.getId();
+                        String resultToolName = tr.getName();
+
+                        // 从 pendingTools 中查找对应的工具调用
+                        PendingToolCall ptc = resultToolId != null
+                            ? pendingTools.remove(resultToolId) : null;
+
+                        // 兜底:如果 id 匹配不到,尝试取第一个 pending
+                        if (ptc == null && !pendingTools.isEmpty()) {
+                            String firstKey = pendingTools.keys().nextElement();
+                            ptc = pendingTools.remove(firstKey);
+                        }
+
+                        String toolId = ptc != null ? ptc.id : (resultToolId != null ? resultToolId : "");
+                        String toolName = ptc != null ? ptc.name : (resultToolName != null ? resultToolName : "");
+                        String argsJson = ptc != null ? ptc.getArgsJson(mapper) : "{}";
+
+                        // tool_call_end:流式参数传输结束
+                        frames.add(ServerSentEvent.<String>builder()
+                                .event("tool_call_end")
+                                .data("{\"id\":\"" + toolId + "\",\"name\":\"" + toolName + "\"}")
+                                .build());
+                        // tool_call(server_executed=true):服务端已执行,前端只展示
+                        String data = "{\"id\":\"" + toolId
+                            + "\",\"tool\":\"" + toolName
+                            + "\",\"args\":" + argsJson
+                            + ",\"server_executed\":true}";
+                        String argsHash = sha256Short(argsJson);
+                        try { audit.logFormSubmit(p.clientId(), p.jti(), sessionId, toolName, argsHash, ip); }
+                        catch (Exception ignored) {}
+                        frames.add(ServerSentEvent.<String>builder()
+                            .event("tool_call")
+                            .data(data)
+                            .build());
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 4) ToolUseBlock → 流式增量推送 + 累积参数
+        // 只发 tool_call_start / tool_call_delta,不发 tool_call_end + tool_call
+        // (服务端工具的 tool_call_end + tool_call 由 ToolResultBlock 触发,
+        //  前端工具的由流结束时的 concatWith 补发)
+        if (msg != null) {
+            try {
+                List<ToolUseBlock> toolUses = msg.getContentBlocks(ToolUseBlock.class);
+                if (toolUses != null) {
+                    for (ToolUseBlock tu : toolUses) {
+                        String toolId = tu.getId() == null ? "" : tu.getId();
+                        String toolName = tu.getName() == null ? "" : tu.getName();
+
+                        // 查找或创建 PendingToolCall
+                        PendingToolCall ptc = pendingTools.get(toolId);
+
+                        if (ptc == null) {
+                            // 新工具调用:创建 pending 记录 + 发 tool_call_start
+                            // 过滤 __fragment__ 等占位名(AgentScope delta 帧可能带此名)
+                            String realName = "__fragment__".equals(toolName) ? "" : toolName;
+                            ptc = new PendingToolCall(toolId, realName);
+                            pendingTools.put(toolId, ptc);
+
+                            if (!realName.isEmpty()) {
+                                frames.add(ServerSentEvent.<String>builder()
+                                        .event("tool_call_start")
+                                        .data("{\"id\":\"" + toolId + "\",\"name\":\"" + realName + "\"}")
+                                        .build());
+                            }
+                        }
+
+                        // 处理内容:增量 or 完整
+                        String content = tu.getContent() == null ? "" : tu.getContent();
+                        if (event.isLast()) {
+                            // isLast=true:当前 LLM 调用最后一帧,ToolUseBlock 参数完整
+                            // 保存完整 args(优先用 input,其次用 content),不发 tool_call_end + tool_call
+                            if (tu.getInput() != null && !tu.getInput().isEmpty()) {
+                                try { ptc.completeArgs = mapper.writeValueAsString(tu.getInput()); }
+                                catch (JsonProcessingException e) { ptc.completeArgs = "{}"; }
+                            } else if (!content.isEmpty()) {
+                                try {
+                                    Object parsed = mapper.readTree(content);
+                                    ptc.completeArgs = mapper.writeValueAsString(parsed);
+                                } catch (Exception e) {
+                                    ptc.completeArgs = content;
+                                }
+                            }
+                            // 如果 toolName 在 start 时是 __fragment__,现在用真实名称更新
+                            if ("__fragment__".equals(ptc.name) && !"__fragment__".equals(toolName) && !toolName.isEmpty()) {
+                                // name 不可变,但 completeArgs 已记录;实际场景中 start 帧应该有真实 name
+                            }
+                        } else if (!content.isEmpty()) {
+                            // 中间帧:累积增量 content + 发 tool_call_delta
+                            ptc.content.append(content);
+                            // delta 中使用 pending 中记录的真实工具名,而非 ToolUseBlock 中可能的 __fragment__
+                            String deltaName = ptc.name.isEmpty() ? toolName : ptc.name;
+                            String frag = "{\"id\":\"" + toolId + "\",\"name\":\"" + deltaName
+                                + "\",\"delta\":\"" + jsonEscape(content) + "\"}";
+                            frames.add(ServerSentEvent.<String>builder()
+                                .event("tool_call_delta")
+                                .data(frag)
+                                .build());
+                        }
+                    }
+                }
+            } catch (Exception ignored) {}
+        }
+
+        // 5) REASONING 类型 + isLast=true 时发 round_end
+        // 仅 REASONING 事件代表一轮 LLM 调用结束,TOOL_RESULT 事件不代表新轮次
+        // 如果 TOOL_RESULT 也发 round_end,会导致前端在工具结果之间创建多余的 typing 占位
+        if (event.isLast() && event.getType() == EventType.REASONING) {
+            boolean hasToolCalls = !pendingTools.isEmpty();
+            frames.add(ServerSentEvent.<String>builder()
+                .event("round_end")
+                .data("{\"hasToolCalls\":" + hasToolCalls + "}")
+                .build());
+        }
+
+        return frames.isEmpty() ? Flux.empty() : Flux.fromIterable(frames);
     }
 
     /**

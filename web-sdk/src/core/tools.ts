@@ -14,6 +14,7 @@
  */
 
 import { consumeSseStream } from './sse';
+import type { SSEEvent } from './types';
 import { SkinRegistry } from './skin';
 import { AIAgent } from './agent';
 import {
@@ -21,6 +22,7 @@ import {
   markToolCardError,
   updateToolCardProgress,
 } from '../ui/components/tool-card';
+import { appendTyping, unmarkTypingActive } from '../ui/components/typing';
 import type {
   LocalTool,
   PendingToolCall,
@@ -28,6 +30,8 @@ import type {
   ToolCallPayload,
   ToolCallStartPayload,
   ToolCallDeltaPayload,
+  ToolCallEndPayload,
+  RoundEndPayload,
   MessageRole,
 } from './types';
 
@@ -725,28 +729,51 @@ async function _postToolResultInner(
   const typing = ctx.appendTyping();
   const msgEl = ctx.getMsgEl();
   let submitted = false;
-  const lifecycle = AIAgent.buildStreamHandlers({
-    typing,
-    msgEl,
-    onUpgrade: () => {
-      // tools/result 流也可能有 thinking 卡片,需要收起
-      if (ctx.handleThinking) {
-        // finalizeThinking 由 _handleThinking 内部的 _thinkingCard 管理
-      }
-    },
-    onErrorFallback: (msg) => ctx.appendMsg('system', msg),
-    onDoneCleanup: () => {
-      // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关)
-      if (!submitted) ctx.setBusy(false);
-    },
-  });
+
+  // typing 引用包装:round_end 时需要替换为新 typing(onThinking 需要用)
+  const typingRef: { typing: HTMLElement } = { typing };
+
+  // 可变 lifecycle 包装:round_end 时替换内部回调,consumeSseStream 通过间接引用感知
+  const lifecycle: {
+    onChunk: (ev: SSEEvent) => void;
+    onDone: () => void;
+    onError: (e: Error) => void;
+    getAssistantBuf: () => string;
+  } = (() => {
+    const built = AIAgent.buildStreamHandlers({
+      typing,
+      msgEl,
+      onUpgrade: () => {
+        // tools/result 流也可能有 thinking 卡片,需要收起
+        if (ctx.handleThinking) {
+          // finalizeThinking 由 _handleThinking 内部的 _thinkingCard 管理
+        }
+      },
+      onErrorFallback: (msg) => ctx.appendMsg('system', msg),
+      onAssistantText: (text) => {
+        if (!text) return;
+        // result 流也需要把 assistant 文本写回 _messages(换肤重放时需要)
+        ctx.appendMsg('assistant', text);
+      },
+      onDoneCleanup: () => {
+        if (!submitted) ctx.setBusy(false);
+      },
+    });
+    return {
+      onChunk: built.onChunk,
+      onDone: built.onDone,
+      onError: built.onError,
+      getAssistantBuf: built.getAssistantBuf,
+    };
+  })();
+
   let consumed = true;
   try {
     await consumeSseStream(
       r.body,
-      lifecycle.onChunk,
-      lifecycle.onDone,
-      lifecycle.onError,
+      (ev: SSEEvent) => lifecycle.onChunk(ev),
+      () => lifecycle.onDone(),
+      (e: Error) => lifecycle.onError(e),
       // onToolCall:跟 _sendUserMessage 完全同源 —— 查本地工具、执行 onCall、POST /tools/result
       async (parsed: ToolCallPayload) => {
         if (ctx.handleToolCall) {
@@ -763,11 +790,55 @@ async function _postToolResultInner(
       (parsed: ToolCallStartPayload) => {
         if (ctx.handleToolCallStart) ctx.handleToolCallStart(parsed);
       },
-      // onToolCallEnd
-      undefined,
+      // onToolCallEnd:保留 delta 卡片不删除,等 tool_call(server_executed) 来 promote
+      (parsed: ToolCallEndPayload) => {
+        // tool_call_end 表示流式参数传输结束,但不要从 pending 中删除!
+        // 后续 tool_call(server_executed) 会 promote delta 卡为 confirmed + markSuccess
+      },
       // onThinking
       (text: string) => {
         if (ctx.handleThinking) ctx.handleThinking(text);
+      },
+      // onRoundEnd:跟 _sendUserMessage 完全同源 —— 创建新 typing,重建 lifecycle
+      (parsed: RoundEndPayload) => {
+        // 清理旧 typing
+        const oldTyping = typingRef.typing;
+        if (oldTyping && oldTyping.parentNode) {
+          const hasParticles = oldTyping.querySelector('.aiagent-sdk-typing-particle');
+          const hasNoText = !oldTyping.textContent?.trim();
+          if (hasParticles || hasNoText) {
+            oldTyping.remove();
+          } else {
+            unmarkTypingActive(oldTyping);
+          }
+        }
+        // 为下一轮创建新的 typing 占位
+        const newTyping = appendTyping(msgEl);
+        // 重建 lifecycle,让下一轮的 onChunk 写入新 typing
+        const newLifecycle = AIAgent.buildStreamHandlers({
+          typing: newTyping,
+          msgEl,
+          onUpgrade: () => {},
+          onErrorFallback: (msg) => ctx.appendMsg('system', msg),
+          onAssistantText: (text) => {
+            if (!text) return;
+            ctx.appendMsg('assistant', text);
+          },
+          onDoneCleanup: () => {
+            if (!submitted) ctx.setBusy(false);
+          },
+        });
+        // 替换 lifecycle 引用(后续 onChunk/onDone 走新 lifecycle)
+        lifecycle.onChunk = newLifecycle.onChunk;
+        lifecycle.onDone = newLifecycle.onDone;
+        lifecycle.onError = newLifecycle.onError;
+        // 替换 typing 引用
+        typingRef.typing = newTyping;
+      },
+      // onText:后端发送的助手文本内容,复用 lifecycle.onChunk 写入 typing
+      (text: string) => {
+        if (!text) return;
+        lifecycle.onChunk({ event: 'text', data: text });
       }
     );
   } catch (e) {

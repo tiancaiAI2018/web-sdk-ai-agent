@@ -147,6 +147,8 @@ export interface ToolCallPayload {
   tool: string;
   args?: Record<string, unknown>;
   id?: string;
+  /** 服务端工具(AgentTool)标记:后端已自动执行,前端只需展示结果 */
+  server_executed?: boolean;
 }
 
 /** tool_call_delta 帧的载荷(LLM 流式分片 args 增量) */
@@ -163,9 +165,18 @@ export interface ToolCallStartPayload {
   name: string;
 }
 
-/** tool_call_end 帧的载荷(流式结束标记,data 为空) */
+/** tool_call_end 帧的载荷(流式结束标记) */
 export interface ToolCallEndPayload {
+  /** 工具调用 ID,用于匹配 tool_call_start / tool_call_delta */
   id?: string;
+  /** 工具名,方便前端不依赖 id 也能识别 */
+  name?: string;
+}
+
+/** round_end 帧的载荷(ReAct 一轮 LLM 调用结束) */
+export interface RoundEndPayload {
+  /** 本轮是否包含工具调用(前端据此决定是否需要等待 TOOL_RESULT) */
+  hasToolCalls?: boolean;
 }
 
 // ====================================================================
@@ -197,6 +208,7 @@ export interface StreamOptions {
   onToolCallStart?: (parsed: ToolCallStartPayload) => void;
   onToolCallEnd?: (parsed: ToolCallEndPayload) => void;
   onThinking?: (text: string) => void;
+  onRoundEnd?: (parsed: RoundEndPayload) => void;
   activeTools?: string[];
 }
 

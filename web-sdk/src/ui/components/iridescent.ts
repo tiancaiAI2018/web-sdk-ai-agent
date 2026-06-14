@@ -21,7 +21,8 @@
 export function appendToolCard(
   msgEl: HTMLElement,
   tool: string,
-  args: Record<string, unknown>
+  args: Record<string, unknown>,
+  beforeEl?: HTMLElement | null
 ): HTMLDivElement {
   const card = document.createElement('div');
   card.className = 'aiagent-sdk-tool-card';
@@ -63,7 +64,12 @@ export function appendToolCard(
   card.appendChild(head);
   card.appendChild(body);
   card.appendChild(progress);
-  msgEl.appendChild(card);
+  // 如果指定了 beforeEl,插入到它之前(多轮场景下确保卡片在 typing 占位之前)
+  if (beforeEl && beforeEl.parentNode === msgEl) {
+    msgEl.insertBefore(card, beforeEl);
+  } else {
+    msgEl.appendChild(card);
+  }
   msgEl.scrollTop = msgEl.scrollHeight;
   return card;
 }
@@ -246,7 +252,8 @@ export function finalizeThinking(card: HTMLElement): void {
 export function appendToolCallDelta(
   msgEl: HTMLElement,
   id: string,
-  toolHint?: string
+  toolHint?: string,
+  beforeEl?: HTMLElement | null
 ): HTMLDivElement {
   const card = document.createElement('div');
   card.className =
@@ -292,7 +299,11 @@ export function appendToolCallDelta(
 
   card.appendChild(head);
   card.appendChild(body);
-  msgEl.appendChild(card);
+  if (beforeEl && beforeEl.parentNode === msgEl) {
+    msgEl.insertBefore(card, beforeEl);
+  } else {
+    msgEl.appendChild(card);
+  }
   msgEl.scrollTop = msgEl.scrollHeight;
   return card;
 }

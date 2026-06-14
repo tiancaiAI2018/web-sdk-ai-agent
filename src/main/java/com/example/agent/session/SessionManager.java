@@ -15,11 +15,7 @@ import io.agentscope.core.ReActAgent;
 import io.agentscope.core.agent.Event;
 import io.agentscope.core.agent.StreamOptions;
 import io.agentscope.core.memory.InMemoryMemory;
-import io.agentscope.core.message.Msg;
-import io.agentscope.core.message.MsgRole;
-import io.agentscope.core.message.TextBlock;
-import io.agentscope.core.message.ToolResultBlock;
-import io.agentscope.core.message.ToolUseBlock;
+import io.agentscope.core.message.*;
 import io.agentscope.core.model.ChatModelBase;
 import io.agentscope.core.model.ToolSchema;
 import io.agentscope.core.session.Session;
@@ -265,6 +261,7 @@ public class SessionManager {
             .doOnNext(event -> {
                 Msg m = event.getMessage();
                 if (m == null) return;
+                if(m.getGenerateReason()!= GenerateReason.TOOL_SUSPENDED) return;
                 List<ToolUseBlock> tus;
                 try {
                     tus = m.getContentBlocks(ToolUseBlock.class);
@@ -293,7 +290,6 @@ public class SessionManager {
                         safe, label, pendingName.get(), pendingId.get());
                 } else {
                     suspendedAgents.remove(safe);
-                    agent.saveTo(session, safe);
                     log.debug("Session {} [{}] complete and saved", safe, label);
                 }
             })
@@ -306,7 +302,8 @@ public class SessionManager {
                     agents.remove(safe);
                     log.warn("Session {} [{}] error, evicted: {}", safe, label, err.toString());
                 }
-            });
+            })
+            .doFinally(signalType -> agent.saveTo(session, safe));
     }
 
     public void evict(String sessionId) {

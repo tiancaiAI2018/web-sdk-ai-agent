@@ -78,6 +78,7 @@ import type {
   ToolCallDeltaPayload,
   ToolCallStartPayload,
   ToolCallEndPayload,
+  RoundEndPayload,
   MessageRole,
 } from './types';
 
@@ -869,38 +870,46 @@ export class AIAgent {
     const activeSnapshot = this._activeTools.slice();
     let submitted = false;
 
+    // typing 引用包装:round_end 时需要替换为新 typing(onThinking 需要用)
+    const typingRef: { typing: HTMLElement } = { typing };
+
     // 共用 lifecycle 工厂:onChunk / onDone / onError 跟 _postToolResultInner 完全同源
-    const lifecycle = AIAgent.buildStreamHandlers({
-      typing,
-      msgEl: refs.msgEl,
-      onUpgrade: () => {
-        // 模型开始输出正文 → 思考卡片已完成使命,收起(主 stream 专属)
-        if (self._thinkingCard) {
-          finalizeThinking(self._thinkingCard);
-          self._thinkingCard = null;
-        }
-      },
-      onErrorFallback: (msg) => self._appendMsg('system', msg),
-      onAssistantText: (text) => {
-        // 把 assistant 文本写回 _messages —— setSkin 重放时需要
-        // 注意:空文本不写(避免占位空消息;空 stream 已经删了 typing)
-        if (!text) return;
-        // 用 push 而不是 _appendMsg —— _appendMsg 会再次渲染 DOM(setSkin 时 typing 还在,
-        // 这里只是 stream 期间累积文本,不是真的"用户发消息"。重渲染走 typing.innerHTML
-        // 即可,真正持久化靠 _messages 数组)
-        self._messages.push({ role: 'assistant', text });
-      },
-      onDoneCleanup: () => {
-        // 若本轮有 tool_call,_postToolResult 会接管 busy(在它的 onDone 里关),
-        // 避免用户在工具结果回传完成前又发新消息撞 409
-        if (!submitted) self._setBusy(false);
-        // 思考完成 → 卡片收起
-        if (self._thinkingCard) {
-          finalizeThinking(self._thinkingCard);
-          self._thinkingCard = null;
-        }
-      },
-    });
+    // 用可变包装对象,round_end 时可以替换内部回调
+    const lifecycle: {
+      onChunk: (ev: SSEEvent) => void;
+      onDone: () => void;
+      onError: (e: Error) => void;
+      getAssistantBuf: () => string;
+    } = (() => {
+      const built = AIAgent.buildStreamHandlers({
+        typing,
+        msgEl: refs.msgEl,
+        onUpgrade: () => {
+          if (self._thinkingCard) {
+            finalizeThinking(self._thinkingCard);
+            self._thinkingCard = null;
+          }
+        },
+        onErrorFallback: (msg) => self._appendMsg('system', msg),
+        onAssistantText: (text) => {
+          if (!text) return;
+          self._messages.push({ role: 'assistant', text });
+        },
+        onDoneCleanup: () => {
+          if (!submitted) self._setBusy(false);
+          if (self._thinkingCard) {
+            finalizeThinking(self._thinkingCard);
+            self._thinkingCard = null;
+          }
+        },
+      });
+      return {
+        onChunk: built.onChunk,
+        onDone: built.onDone,
+        onError: built.onError,
+        getAssistantBuf: built.getAssistantBuf,
+      };
+    })();
 
     const postOpts: {
       sessionId?: string;
@@ -914,28 +923,104 @@ export class AIAgent {
       onToolCallDelta: (parsed: ToolCallDeltaPayload) => void;
       onToolCallStart: (parsed: ToolCallStartPayload) => void;
       onToolCallEnd: (parsed: ToolCallEndPayload) => void;
+      onRoundEnd: (parsed: RoundEndPayload) => void;
+      onText: (text: string) => void;
     } = {
       message: text,
-      onChunk: lifecycle.onChunk,
-      onDone: lifecycle.onDone,
-      onError: lifecycle.onError,
+      // onChunk/onDone/onError 必须通过间接引用调用,不能直接传 lifecycle 的方法!
+      // 因为 round_end 会替换 lifecycle.onChunk/onDone/onError 为 newLifecycle 的版本,
+      // 如果直接传值,consumeSseStream 持有的是旧引用,id:last 时调不到新 onDone,
+      // onChunk 也写不到新 typing,导致最后一轮 round_end 创建的空 typing 无法被清理。
+      onChunk: (ev: SSEEvent) => lifecycle.onChunk(ev),
+      onDone: () => lifecycle.onDone(),
+      onError: (e: Error) => lifecycle.onError(e),
       onThinking: (text: string) => {
-        self._handleThinking(text, refs.msgEl, typing);
+        self._handleThinking(text, refs.msgEl, typingRef.typing);
       },
       onToolCallStart: (parsed: ToolCallStartPayload) => {
-        self._handleToolCallStart(parsed, refs.msgEl);
+        self._handleToolCallStart(parsed, refs.msgEl, typingRef.typing);
       },
       onToolCallDelta: (parsed: ToolCallDeltaPayload) => {
-        self._handleToolCallDelta(parsed, refs.msgEl);
+        self._handleToolCallDelta(parsed, refs.msgEl, typingRef.typing);
       },
-      onToolCallEnd: (_parsed: ToolCallEndPayload) => {
-        console.log('[AIAgent SDK 🏁 onToolCallEnd] 流式结束');
-        // 暂不需要 UI 行为,留 hook 备扩展
+      onToolCallEnd: (parsed: ToolCallEndPayload) => {
+        console.log('[AIAgent SDK 🏁 onToolCallEnd] 流式工具参数传输结束', parsed);
+        // tool_call_end 表示流式参数传输结束,但不要从 _pendingDelta 中删除!
+        // 后续会有 tool_call(完整帧)或 tool_call(server_executed) 来做最终处理,
+        // 那时才会 promote delta 卡为 confirmed 卡 + markSuccess。
+        // 如果这里删除了,后续 onToolCall 就找不到 delta 卡,会创建重复的新卡片。
+      },
+      onRoundEnd: (parsed: RoundEndPayload) => {
+        // ReAct 一轮 LLM 调用结束(REASONING+isLast=true),重置思考缓冲区,
+        // 清理旧 typing 占位,为下一轮创建新的 typing 占位。
+        // 这样多轮推理(思考→工具→思考→对话)不会合并到同一个气泡。
+        self._thinkingBuf = '';
+        if (self._thinkingCard) {
+          finalizeThinking(self._thinkingCard);
+          self._thinkingCard = null;
+        }
+        // 提交当前 lifecycle 的 assistant 文本到 _messages
+        const buf = lifecycle.getAssistantBuf();
+        if (buf) {
+          self._messages.push({ role: 'assistant', text: buf });
+        }
+        // 清理旧 typing:如果旧 typing 没有被 upgrade(没有 assistant 文本),
+        // 说明这轮只有思考+工具调用,旧 typing 是空的占位框,需要移除
+        const oldTyping = typingRef.typing;
+        if (oldTyping && oldTyping.parentNode) {
+          // 检查 typing 是否仍为粒子状态(未被 upgrade)
+          const hasParticles = oldTyping.querySelector('.aiagent-sdk-typing-particle');
+          const hasNoText = !oldTyping.textContent?.trim();
+          if (hasParticles || hasNoText) {
+            oldTyping.remove();
+          } else {
+            // typing 已有内容,标记为非活跃
+            unmarkTypingActive(oldTyping);
+          }
+        }
+        // 为下一轮创建新的 typing 占位
+        const newTyping = appendTyping(refs.msgEl);
+        // 重建 lifecycle,让下一轮的 onChunk 写入新 typing
+        const newLifecycle = AIAgent.buildStreamHandlers({
+          typing: newTyping,
+          msgEl: refs.msgEl,
+          onUpgrade: () => {
+            if (self._thinkingCard) {
+              finalizeThinking(self._thinkingCard);
+              self._thinkingCard = null;
+            }
+          },
+          onErrorFallback: (msg) => self._appendMsg('system', msg),
+          onAssistantText: (text) => {
+            if (!text) return;
+            self._messages.push({ role: 'assistant', text });
+          },
+          onDoneCleanup: () => {
+            if (!submitted) self._setBusy(false);
+            if (self._thinkingCard) {
+              finalizeThinking(self._thinkingCard);
+              self._thinkingCard = null;
+            }
+          },
+        });
+        // 替换 lifecycle 引用(后续 onChunk/onDone 走新 lifecycle)
+        lifecycle.onChunk = newLifecycle.onChunk;
+        lifecycle.onDone = newLifecycle.onDone;
+        lifecycle.onError = newLifecycle.onError;
+        // 替换 typing 引用(onThinking 需要用)
+        typingRef.typing = newTyping;
       },
       onToolCall: async (parsed: ToolCallPayload) => {
         self._setBusy(true);
-        const didSubmit = await self._handleToolCall(parsed, refs.msgEl);
+        const didSubmit = await self._handleToolCall(parsed, refs.msgEl, typingRef.typing);
         if (didSubmit) submitted = true;
+      },
+      // text 事件:后端发送的助手文本内容,渲染到 typing 区域
+      // 跟 onChunk 处理助手文本的逻辑一致,但 text 事件是独立的事件类型
+      onText: (text: string) => {
+        if (!text) return;
+        // 复用 lifecycle.onChunk 把文本写入 typing 区域
+        lifecycle.onChunk({ event: 'text', data: text });
       },
     };
 
@@ -972,19 +1057,19 @@ export class AIAgent {
     }
   }
 
-  /** 处理 tool_call_start 事件:创建占位卡 */
-  _handleToolCallStart(parsed: ToolCallStartPayload, msgEl: HTMLElement): void {
+  /** 处理 tool_call_start 事件:创建占位卡,插入到 typing 之前 */
+  _handleToolCallStart(parsed: ToolCallStartPayload, msgEl: HTMLElement, typing?: HTMLElement): void {
     if (!parsed || !parsed.id || !parsed.name) return;
-    const card = appendToolCallDelta(msgEl, parsed.id, parsed.name);
+    const card = appendToolCallDelta(msgEl, parsed.id, parsed.name, typing || null);
     this._pendingDelta.set(parsed.id, card);
   }
 
   /** 处理 tool_call_delta 事件:累积到占位卡 */
-  _handleToolCallDelta(parsed: ToolCallDeltaPayload, msgEl: HTMLElement): void {
+  _handleToolCallDelta(parsed: ToolCallDeltaPayload, msgEl: HTMLElement, typing?: HTMLElement): void {
     if (!parsed || !parsed.id) return;
     let card = this._pendingDelta.get(parsed.id);
     if (!card) {
-      card = appendToolCallDelta(msgEl, parsed.id, parsed.name || '...');
+      card = appendToolCallDelta(msgEl, parsed.id, parsed.name || '...', typing || null);
       this._pendingDelta.set(parsed.id, card);
     }
     updateToolCallDelta(card, parsed.delta || '');
@@ -992,14 +1077,39 @@ export class AIAgent {
 
   /**
    * 处理 tool_call 事件(完整帧):查找本地工具 → 执行 onCall → POST /tools/result
+   * 服务端工具(server_executed=true):仅展示结果,不执行 onCall,不 POST /tools/result
    * @returns true 表示本 stream 已提交工具结果(调用方据此决定是否关 busy)
    */
   async _handleToolCall(
     parsed: ToolCallPayload,
-    msgEl: HTMLElement
+    msgEl: HTMLElement,
+    typing?: HTMLElement
   ): Promise<boolean> {
     if (!parsed || !parsed.tool) return false;
     if (parsed.tool.indexOf('__') === 0) return false;
+
+    // 服务端工具(AgentTool):后端已自动执行,只需展示结果卡片,不需要前端干预
+    const isServerExecuted = !!(parsed as { server_executed?: boolean }).server_executed;
+    if (isServerExecuted) {
+      // promote 占位卡为完成状态
+      const existing = parsed.id ? this._pendingDelta.get(parsed.id) : null;
+      if (existing) {
+        promoteToConfirmedToolCall(existing, parsed.args || {}, parsed.tool);
+        this._pendingDelta.delete(parsed.id!);
+        // 服务端工具已执行完毕,直接标记成功
+        markToolCardSuccess(existing);
+      } else {
+        // 没有占位卡,创建一个已完成的卡片,插入到 typing 之前
+        const card = appendToolCard(msgEl, parsed.tool, parsed.args || {}, typing || null);
+        promoteToConfirmedToolCall(card, parsed.args || {}, parsed.tool);
+        markToolCardSuccess(card);
+      }
+      this._messages.push({ role: 'tool', text: '', data: { tool: parsed.tool, args: parsed.args || {} } });
+      // 服务端工具不需要 POST /tools/result,agent 不会 TOOL_SUSPENDED
+      return false;
+    }
+
+    // 以下为 SDK 前端工具的逻辑
     if (!parsed.args || typeof parsed.args !== 'object') return false;
     if (Object.keys(parsed.args).length === 0) return false;
 
@@ -1009,7 +1119,7 @@ export class AIAgent {
       ? (promoteToConfirmedToolCall(existing, parsed.args, parsed.tool),
         this._pendingDelta.delete(parsed.id!), existing)
       : (() => {
-          const fb = appendToolCard(msgEl, parsed.tool, parsed.args);
+          const fb = appendToolCard(msgEl, parsed.tool, parsed.args, typing || null);
           promoteToConfirmedToolCall(fb, parsed.args, parsed.tool);
           return fb;
         })();
@@ -1116,6 +1226,8 @@ export class AIAgent {
     onToolCallStart?: (parsed: ToolCallStartPayload) => void;
     onToolCallEnd?: (parsed: ToolCallEndPayload) => void;
     onThinking?: (text: string) => void;
+    onRoundEnd?: (parsed: RoundEndPayload) => void;
+    onText?: (text: string) => void;
   }): Promise<void> {
     const sessionId = opts.sessionId;
     const message = opts.message;
@@ -1128,6 +1240,8 @@ export class AIAgent {
     const onToolCallStart = opts.onToolCallStart;
     const onToolCallEnd = opts.onToolCallEnd;
     const onThinking = opts.onThinking;
+    const onRoundEnd = opts.onRoundEnd;
+    const onText = opts.onText;
 
     if (!sessionId) {
       onError(new Error('sessionId required'));
@@ -1172,7 +1286,7 @@ export class AIAgent {
     }
     return consumeSseStream(
       r.body, onChunk, onDone, onError,
-      onToolCall, onToolCallDelta, onToolCallStart, onToolCallEnd, onThinking
+      onToolCall, onToolCallDelta, onToolCallStart, onToolCallEnd, onThinking, onRoundEnd, onText
     );
   }
 
@@ -1242,17 +1356,20 @@ export class AIAgent {
       handleToolCallStart: (parsed) => {
         const refs = self._widget?.getRefs();
         if (!refs) return;
-        self._handleToolCallStart(parsed, refs.msgEl);
+        const typing = refs.msgEl.querySelector('.aiagent-sdk-typing') as HTMLElement | null;
+        self._handleToolCallStart(parsed, refs.msgEl, typing || undefined);
       },
       handleToolCallDelta: (parsed) => {
         const refs = self._widget?.getRefs();
         if (!refs) return;
-        self._handleToolCallDelta(parsed, refs.msgEl);
+        const typing = refs.msgEl.querySelector('.aiagent-sdk-typing') as HTMLElement | null;
+        self._handleToolCallDelta(parsed, refs.msgEl, typing || undefined);
       },
       handleToolCall: async (parsed) => {
         const refs = self._widget?.getRefs();
         if (!refs) return false;
-        return self._handleToolCall(parsed as ToolCallPayload, refs.msgEl);
+        const typing = refs.msgEl.querySelector('.aiagent-sdk-typing') as HTMLElement | null;
+        return self._handleToolCall(parsed as ToolCallPayload, refs.msgEl, typing || undefined);
       },
     };
   }

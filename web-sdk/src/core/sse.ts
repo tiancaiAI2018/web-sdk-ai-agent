@@ -15,6 +15,7 @@ import type {
   ToolCallDeltaPayload,
   ToolCallStartPayload,
   ToolCallEndPayload,
+  RoundEndPayload,
 } from './types';
 
 export async function consumeSseStream(
@@ -26,7 +27,9 @@ export async function consumeSseStream(
   onToolCallDelta?: (parsed: ToolCallDeltaPayload) => void,
   onToolCallStart?: (parsed: ToolCallStartPayload) => void,
   onToolCallEnd?: (parsed: ToolCallEndPayload) => void,
-  onThinking?: (text: string) => void
+  onThinking?: (text: string) => void,
+  onRoundEnd?: (parsed: RoundEndPayload) => void,
+  onText?: (text: string) => void
 ): Promise<void> {
   const reader = body.getReader();
   const dec = new TextDecoder();
@@ -117,6 +120,16 @@ export async function consumeSseStream(
         }
         continue;
       }
+      if (ev.event === 'round_end' && typeof onRoundEnd === 'function') {
+        try {
+          const parsed = ev.data ? JSON.parse(ev.data) : {};
+          console.log('[AIAgent SDK 🔄 round_end]', parsed);
+          onRoundEnd(parsed);
+        } catch (e) {
+          onRoundEnd({});
+        }
+        continue;
+      }
       if (ev.id === 'last') {
         // 兜底:任何带 id:last 的帧(thinking / 纯文字 / 空哨兵)都触发 fireDone。
         // 幂等保护由 doneCalled 标志位保证。
@@ -126,6 +139,12 @@ export async function consumeSseStream(
       }
       if (ev.event === 'thinking' && typeof onThinking === 'function') {
         onThinking(ev.data || '');
+        continue;
+      }
+      // text 事件:后端发送的助手文本内容,路由到 onText 处理器
+      // 跟 thinking 类似,是独立的事件类型,不应走通用 onChunk
+      if (ev.event === 'text' && typeof onText === 'function') {
+        onText(ev.data || '');
         continue;
       }
       if (ev.data !== undefined) onChunk(ev);

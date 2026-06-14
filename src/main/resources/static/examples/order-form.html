@@ -147,15 +147,19 @@
       urgency: {}, payment: {}, device_type: {}, device_model: {}
     };
 
-    // ===== 页面加载时,从后端拉字典数据填充下拉框 =====
+    // ===== 页面加载时,从第三方服务拉字典数据填充下拉框 =====
+    // 前端是第三方服务自己的页面,字典数据直接从第三方 API 获取,
+    // 与 AI 后端的 query_dict 工具使用同一数据源,保证编码一致
+    var THIRD_PARTY_BASE = 'http://localhost:7000';
     var DICT_TYPES = ['city', 'product', 'warehouse', 'category', 'urgency', 'payment', 'device_type'];
     // device_model 不在此列表,它由级联动态加载
 
     DICT_TYPES.forEach(function (dictType) {
-      fetch('http://localhost:8080/dict/' + dictType + '/list')
+      fetch(THIRD_PARTY_BASE + '/api/dict/' + dictType + '/list')
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          var items = data.body || data;
+          // 第三方 API 返回格式: { data: [...] }
+          var items = data.data || data.body || data;
           var sel = document.querySelector('select[data-dict="' + dictType + '"]');
           if (!sel) return;
 
@@ -200,10 +204,10 @@
       deviceModelSelect.innerHTML = '<option value="">-- 加载中... --</option>';
       cascadeHint.textContent = '正在加载 ' + (dictCache.device_type[parentCode] || parentCode) + ' 的型号...';
 
-      fetch('http://localhost:8080/dict/device_model/list?parentCode=' + encodeURIComponent(parentCode))
+      fetch(THIRD_PARTY_BASE + '/api/dict/device_model/list?parentCode=' + encodeURIComponent(parentCode))
         .then(function (r) { return r.json(); })
         .then(function (data) {
-          var items = data.body || data;
+          var items = data.data || data.body || data;
           deviceModelSelect.innerHTML = '<option value="">-- 请选择设备型号(' + items.length + '个) --</option>';
           items.forEach(function (item) {
             var opt = document.createElement('option');
