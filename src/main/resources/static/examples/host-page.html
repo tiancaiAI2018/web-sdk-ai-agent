@@ -201,6 +201,20 @@
     <button id="btn-page-settings" style="background:#0e7490;color:#fff;">切到 ⚙️ 设置</button>
     <button id="btn-page-history" style="background:#0e7490;color:#fff;">切到 📜 历史</button>
   </div>
+
+  <!-- 9. 快捷指令 -->
+  <div class="demo-section" style="border-left-color:#f59e0b; background:#fffbeb;">
+    <h3 style="color:#b45309;">9. 快捷指令 (Quick Commands)</h3>
+    <p>输入框输入 <code>/</code> 触发模糊匹配下拉框,键盘 ↑↓ 导航、Enter 选中、Esc 关闭。</p>
+    <p><strong>内置指令</strong>(自动注册):/new(新会话) / /clear(清空) / /help(列出指令)</p>
+    <p><strong>第三方指令</strong>可通过 <code>init({ quickCommands: [...] })</code> 或 <code>agent.registerCommands([...])</code> 注入。</p>
+    <p><strong>程序化 API</strong></p>
+    <button id="btn-cmd-add">注册自定义指令 (录单模板 / 翻译)</button>
+    <button id="btn-cmd-remove">移除自定义指令</button>
+    <button id="btn-cmd-list">列出所有指令</button>
+    <button id="btn-cmd-open">打开浮窗演示</button>
+    <p id="cmd-status" style="margin-top:8px;font-weight:bold;color:#b45309;">自定义指令: 无</p>
+  </div>
   </details>
 
   <div style="margin-top:16px;">
@@ -1058,6 +1072,65 @@
     document.getElementById('btn-page-memory').addEventListener('click', function () { agent.switchPage('memory'); log('已切到 🧠 记忆页'); });
     document.getElementById('btn-page-settings').addEventListener('click', function () { agent.switchPage('settings'); log('已切到 ⚙️ 设置页'); });
     document.getElementById('btn-page-history').addEventListener('click', function () { agent.switchPage('history'); log('已切到 📜 历史页 (v1 占位)'); });
+
+    // ===== 9. 快捷指令(Quick Commands)=====
+    var customCmdsAdded = false;
+    function setCmdStatus(text) {
+      document.getElementById('cmd-status').textContent = '自定义指令: ' + text;
+    }
+    document.getElementById('btn-cmd-add').addEventListener('click', function () {
+      if (customCmdsAdded) {
+        log('自定义指令已注册(无需重复)');
+        return;
+      }
+      // 三种行为演示:action / expandsTo / 仅填充
+      agent.registerCommands([
+        {
+          name: 'order',
+          label: '录单模板',
+          icon: '📝',
+          description: '插入录单模板到输入框',
+          expandsTo: '帮我录一单:',
+        },
+        {
+          name: 'translate',
+          label: '翻译成英文',
+          icon: '🌐',
+          description: '把选中文字翻译成英文(演示 action)',
+          action: function (a) {
+            a._appendMsg('system', '🌐 翻译指令已触发(实际逻辑由宿主实现)');
+          },
+        },
+        {
+          name: 'urgent',
+          label: '加急订单',
+          icon: '⚡',
+          description: '追加加急关键词',
+          expandsTo: '/order 加急,北京仓,5 台小米 14,',
+        },
+      ]);
+      customCmdsAdded = true;
+      setCmdStatus('3 个 (order/translate/urgent)');
+      log('✅ 已注册 3 个自定义指令,打开浮窗输入 / 试试');
+    });
+    document.getElementById('btn-cmd-remove').addEventListener('click', function () {
+      if (!customCmdsAdded) {
+        log('没有自定义指令需要移除');
+        return;
+      }
+      agent.unregisterCommands(['order', 'translate', 'urgent']);
+      customCmdsAdded = false;
+      setCmdStatus('无');
+      log('✅ 已移除自定义指令,下拉中只剩内置 3 个');
+    });
+    document.getElementById('btn-cmd-list').addEventListener('click', function () {
+      var list = agent.listCommands();
+      log('当前已注册 ' + list.length + ' 个指令: ' + list.map(function (c) { return '/' + c.name; }).join(', '));
+    });
+    document.getElementById('btn-cmd-open').addEventListener('click', function () {
+      agent.open();
+      log('已打开浮窗,在输入框输入 / 触发下拉');
+    });
 
     // ===== 5. 打开浮窗对话 =====
     document.getElementById('trigger-chat').addEventListener('click', function () {

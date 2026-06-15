@@ -71,6 +71,9 @@ export {
 export type { Skin, SkinLayout, Palette } from './core/skin';
 export { PageAwareness } from './core/page-awareness';
 export type { PageAwarenessHost } from './core/page-awareness';
+// 快捷指令
+export { CommandRegistry } from './core/commands';
+export type { CommandMatch } from './core/commands';
 
 // 类型导出
 export type {
@@ -91,4 +94,5 @@ export type {
   PageError,
   PageErrorSource,
   PageErrorSeverity,
+  QuickCommand,
 } from './core/types';

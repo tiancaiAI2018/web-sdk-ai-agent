@@ -78,6 +78,48 @@ export interface AIAgentOptions {
     settings?: boolean;
     history?: boolean;
   };
+  /**
+   * 快捷指令列表(输入 `/` 触发下拉)。
+   * SDK 自带 /new、/clear、/help 三个内置指令,同 name 时用户指令覆盖内置。
+   * 详见 web-sdk/docs/sdk-api.md 快捷指令章节。
+   */
+  quickCommands?: QuickCommand[];
+}
+
+// ====================================================================
+// 快捷指令(Quick Commands)
+// ====================================================================
+
+/**
+ * 快捷指令定义 — 输入 `/` 时弹出下拉,选中后执行 action 或填充 expandsTo。
+ *
+ * 内置指令:
+ *   - `/new`   → 新会话
+ *   - `/clear` → 清空聊天
+ *   - `/help`  → 列出所有指令
+ *
+ * 行为优先级:action 优先于 expandsTo。两者都不传时,选中后在输入框填充 `/{name} `。
+ */
+export interface QuickCommand {
+  /** 命令名,不含前导 `/`。如 'new'、'help'。同名时后注册覆盖先注册。 */
+  name: string;
+  /** 显示标签(中文友好),下拉中显示。 */
+  label: string;
+  /** 描述文本,下拉右侧显示。 */
+  description?: string;
+  /** 图标(emoji 或文字),如 '🆕'。 */
+  icon?: string;
+  /**
+   * 展开文本:选中后替换输入框中的斜杠命令为此值。
+   * 适合模板类命令,如 `/report` → '请帮我生成一份关于 ___ 的报告'。
+   */
+  expandsTo?: string;
+  /**
+   * 即时执行回调:选中后立即调用,不清空输入框(SDK 自动清除斜杠文本)。
+   * 与 expandsTo 互斥;若两者都传,action 优先。
+   * 参数为 agent 实例(用 unknown 避免 types.ts 循环依赖,使用方自行 cast 为 AIAgent)。
+   */
+  action?: (agent: unknown) => void | Promise<void>;
 }
 
 // ====================================================================

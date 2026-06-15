@@ -45,6 +45,7 @@ import {
   recallMemoryTool,
   type ToolCtx,
 } from './tools';
+import { CommandRegistry, type CommandMatch } from './commands';
 import { PageAwareness, type PageAwarenessHost } from './page-awareness';
 import {
   MemoryEngine,
@@ -95,6 +96,7 @@ import type {
   PageError,
   RoundEndPayload,
   MessageRole,
+  QuickCommand,
 } from './types';
 
 /**
@@ -195,6 +197,13 @@ export class AIAgent {
    * 一个 stream 内多个 tool 并发时才会有 >1 项;正常录单场景 1 项。
    */
   _pendingDelta: Map<string, HTMLElement> = new Map();
+  /** 快捷指令注册表(init 时填内置 + 用户指令) */
+  _commands = new CommandRegistry();
+  /**
+   * 选中某条命令时光标所在 textarea 字符位置(agent 端缓存,widget 端也有同名字段)。
+   * 用于清除斜杠文本时的精确删除。
+   */
+  _cmdSlashEnd: number = 0;
 
   // ====================================================================
   // 公共入口
@@ -239,8 +248,16 @@ export class AIAgent {
       onToolPanelAction: (name: string) =>
         this._handleToolPanelAction(name),
       onPageChange: (page) => this._handlePageChange(page),
+      onCommandSearch: (query: string) => this._commands.search(query),
+      onCommandSelect: (cmd: QuickCommand) => this._executeCommand(cmd),
     });
     this._widget.mount();
+
+    // ===== 快捷指令:先注册内置,再注册用户指令(同 name 用户覆盖内置)=====
+    this._commands.register(AIAgent._builtinCommands());
+    if (opts.quickCommands && opts.quickCommands.length > 0) {
+      this._commands.register(opts.quickCommands);
+    }
 
     // 侧边栏:配置哪些页面可见。memory.enabled=true → memory 页可见;其它默认 settings。
     this._widget.setPageConfig({
@@ -319,6 +336,138 @@ export class AIAgent {
       this._widget.destroy();
       this._widget = null;
     }
+  }
+
+  // ====================================================================
+  // 公共 API — 快捷指令(Quick Commands)
+  // ====================================================================
+
+  /**
+   * 运行时注册快捷指令。同 name 时后注册覆盖先注册。
+   * 也可在 init({ quickCommands: [...] }) 一次性传入。
+   */
+  registerCommands(cmds: QuickCommand[]): void {
+    this._commands.register(cmds || []);
+  }
+
+  /**
+   * 注销快捷指令。names 不传 = 注销所有用户指令(保留内置)。
+   * 注意:内置指令(/new、/clear、/help)不会因为 unregisterCommands 而被清除,
+   * 因为它们在 init() 时注册,unregisterCommands 只针对用户指令。
+   */
+  unregisterCommands(names?: string[]): void {
+    if (!names || names.length === 0) {
+      // 只清用户指令:重新注册内置
+      this._commands.register(AIAgent._builtinCommands());
+      return;
+    }
+    this._commands.unregister(names);
+  }
+
+  /**
+   * 列出当前所有已注册快捷指令(按注册顺序)。
+   */
+  listCommands(): QuickCommand[] {
+    return this._commands.list();
+  }
+
+  /**
+   * 内部:执行一条快捷指令(由 widget 选中时回调)。
+   * 行为:
+   *   - action 存在 → 清空整个输入框 + 执行 action(agent)
+   *     (即时执行,文本不再有意义;下拉由 widget 选中路径自动关闭)
+   *   - 否则 expandsTo 存在 → 替换斜杠文本为 expandsTo,光标末尾
+   *   - 都没有 → 在输入框填充 /{name} + 空格,光标末尾
+   */
+  private _executeCommand(cmd: QuickCommand): void {
+    if (!this._widget) return;
+
+    if (cmd.action) {
+      // action 模式:清空整个输入框(即时执行,文本不再有意义)
+      this._widget.clearInput();
+      try {
+        const r = cmd.action(this as unknown);
+        if (r && typeof (r as Promise<void>).then === 'function') {
+          (r as Promise<void>).catch((e) => {
+            try {
+              console.warn('[AIAgent SDK ⚡ 命令执行失败]', cmd.name, e);
+            } catch {
+              /* 静默 */
+            }
+          });
+        }
+      } catch (e) {
+        try {
+          console.warn('[AIAgent SDK ⚡ 命令执行异常]', cmd.name, e);
+        } catch {
+          /* 静默 */
+        }
+      }
+      return;
+    }
+
+    if (cmd.expandsTo) {
+      this._widget.setInputFromCommand({
+        mode: 'replace',
+        deleteLen: this._widget.getSlashQueryLen(),
+        replace: cmd.expandsTo,
+        cursor: cmd.expandsTo.length,
+      });
+      return;
+    }
+
+    // 都没有:填充 /{name} + 空格
+    this._widget.setInputFromCommand({
+      mode: 'replace',
+      deleteLen: this._widget.getSlashQueryLen(),
+      replace: '/' + cmd.name + ' ',
+    });
+  }
+
+  /**
+   * 内置指令 — SDK 默认注册的 3 个基础命令。
+   * 用户用同名指令注册时会覆盖。
+   * 注意:icon 选用跨平台稳定渲染的简单符号(部分 emoji 在 Windows 上会回退为文字)。
+   */
+  private static _builtinCommands(): QuickCommand[] {
+    return [
+      {
+        name: 'new',
+        label: '新会话',
+        icon: '＋',
+        description: '创建新的对话会话',
+        action: (agent: unknown) => {
+          (agent as AIAgent)._newSession();
+        },
+      },
+      {
+        name: 'clear',
+        label: '清空聊天',
+        icon: '✕',
+        description: '清空当前聊天消息',
+        action: (agent: unknown) => {
+          const a = agent as AIAgent;
+          a._widget?.clearMessages();
+          a._messages = [];
+        },
+      },
+      {
+        name: 'help',
+        label: '帮助',
+        icon: '?',
+        description: '显示所有可用命令',
+        action: (agent: unknown) => {
+          const a = agent as AIAgent;
+          const cmds = a._commands.list();
+          const lines = cmds.map((c) => {
+            const icon = c.icon || '⚡';
+            const desc = c.description ? ` — ${c.description}` : '';
+            return `  ${icon} /${c.name}  ${c.label}${desc}`;
+          });
+          a._appendMsg('system', '📋 可用命令:\n' + lines.join('\n'));
+        },
+      },
+    ];
   }
 
   // ====================================================================

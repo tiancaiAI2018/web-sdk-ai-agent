@@ -2058,4 +2058,184 @@ export const IRIDESCENT_BLOOM_CSS = `
   padding: 3px 0;
 }
 .aia-set-about-row span:first-child { color: var(--aia-text-faint); }
+
+/* ====================================================================
+ * 快捷指令下拉面板 — 轻量毛玻璃风格
+ * 设计目标:跟对话区融为一体,只在 active 态有微微高亮,
+ * 不喧宾夺主。图标去除背景框,仅留 emoji 本体;配色用 --aia-paint 渐变。
+ * ==================================================================== */
+.aiagent-sdk-cmd-dropdown {
+  position: relative;
+  flex-shrink: 0;
+  align-self: stretch;
+  background: rgba(20, 20, 24, 0.75);
+  -webkit-backdrop-filter: blur(16px) saturate(150%);
+  backdrop-filter: blur(16px) saturate(150%);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  border-bottom: none;
+  border-radius: 10px 10px 0 0;
+  display: block;
+  box-shadow: 0 -6px 24px rgba(0, 0, 0, 0.25);
+  animation: aia-cmd-slide-in 160ms var(--aia-anim-ease);
+  overflow: hidden;
+  /* 顶边 1px 极细渐变线 — 5 色 paint 循环 */
+  background-image:
+    linear-gradient(90deg, var(--aia-paint-1), var(--aia-paint-3), var(--aia-paint-5), var(--aia-paint-2), var(--aia-paint-4), var(--aia-paint-1));
+  background-size: 100% 1px;
+  background-repeat: no-repeat;
+  background-position: top;
+  background-color: rgba(20, 20, 24, 0.75);
+}
+.aiagent-sdk-cmd-dropdown[hidden] { display: none; }
+.aiagent-sdk-cmd-header {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 10.5px;
+  color: var(--aia-text-faint);
+  text-transform: uppercase;
+  letter-spacing: 0.8px;
+  padding: 10px 14px 4px;
+  font-weight: 500;
+}
+.aiagent-sdk-cmd-header::before {
+  content: '';
+  width: 4px;
+  height: 4px;
+  border-radius: 50%;
+  background: var(--aia-paint-1);
+  box-shadow: 0 0 6px var(--aia-paint-1);
+  flex-shrink: 0;
+}
+.aiagent-sdk-cmd-list {
+  max-height: 220px;
+  overflow-y: auto;
+  padding: 2px 4px 4px;
+  scrollbar-width: thin;
+  scrollbar-color: rgba(167, 139, 250, 0.25) transparent;
+}
+.aiagent-sdk-cmd-list::-webkit-scrollbar { width: 5px; }
+.aiagent-sdk-cmd-list::-webkit-scrollbar-track { background: transparent; }
+.aiagent-sdk-cmd-list::-webkit-scrollbar-thumb {
+  background: rgba(167, 139, 250, 0.25);
+  border-radius: 3px;
+}
+.aiagent-sdk-cmd-list::-webkit-scrollbar-thumb:hover { background: rgba(167, 139, 250, 0.4); }
+
+.aiagent-sdk-cmd-item {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  padding: 6px 10px;
+  margin-bottom: 1px;
+  cursor: pointer;
+  border-radius: 7px;
+  transition: background 120ms var(--aia-anim-ease);
+  user-select: none;
+  position: relative;
+}
+.aiagent-sdk-cmd-item:last-child { margin-bottom: 0; }
+.aiagent-sdk-cmd-item:hover {
+  background: rgba(255, 255, 255, 0.05);
+}
+.aiagent-sdk-cmd-item.aiagent-sdk-cmd-active {
+  background: rgba(167, 139, 250, 0.13);
+}
+.aiagent-sdk-cmd-item.aiagent-sdk-cmd-active::before {
+  content: '';
+  position: absolute;
+  left: 2px;
+  top: 8px;
+  bottom: 8px;
+  width: 2px;
+  border-radius: 1px;
+  background: linear-gradient(180deg, var(--aia-paint-1), var(--aia-paint-2));
+}
+
+.aiagent-sdk-cmd-icon {
+  font-size: 14px;
+  width: 18px;
+  text-align: center;
+  flex-shrink: 0;
+  opacity: 0.85;
+  line-height: 1;
+}
+.aiagent-sdk-cmd-item.aiagent-sdk-cmd-active .aiagent-sdk-cmd-icon { opacity: 1; }
+
+.aiagent-sdk-cmd-body {
+  flex: 1;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 0;
+}
+.aiagent-sdk-cmd-name {
+  font-size: 11.5px;
+  font-weight: 600;
+  color: var(--aia-paint-2);
+  font-family: var(--aia-mono);
+  letter-spacing: 0.02em;
+  line-height: 1.2;
+  opacity: 0.85;
+}
+.aiagent-sdk-cmd-item.aiagent-sdk-cmd-active .aiagent-sdk-cmd-name {
+  color: var(--aia-paint-1);
+  opacity: 1;
+}
+.aiagent-sdk-cmd-label {
+  font-size: 12px;
+  color: var(--aia-text-muted);
+  line-height: 1.3;
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.aiagent-sdk-cmd-item.aiagent-sdk-cmd-active .aiagent-sdk-cmd-label {
+  color: var(--aia-text);
+}
+.aiagent-sdk-cmd-desc {
+  font-size: 10.5px;
+  color: var(--aia-text-faint);
+  flex-shrink: 0;
+  max-width: 100px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-style: italic;
+  opacity: 0.75;
+}
+.aiagent-sdk-cmd-empty {
+  padding: 18px 12px;
+  text-align: center;
+  font-size: 12px;
+  color: var(--aia-text-faint);
+  font-style: italic;
+}
+.aiagent-sdk-cmd-footer {
+  font-size: 10px;
+  color: var(--aia-text-faint);
+  padding: 5px 14px 6px;
+  border-top: 1px solid rgba(255, 255, 255, 0.06);
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  background: rgba(0, 0, 0, 0.15);
+  opacity: 0.7;
+}
+.aiagent-sdk-cmd-footer kbd {
+  background: rgba(255, 255, 255, 0.05);
+  border: 1px solid rgba(255, 255, 255, 0.08);
+  padding: 0 4px;
+  border-radius: 3px;
+  font-family: var(--aia-mono);
+  font-size: 9.5px;
+  margin-right: 3px;
+  color: var(--aia-text-muted);
+  line-height: 1.5;
+}
+.aiagent-sdk-cmd-footer span { margin-right: 6px; }
+@keyframes aia-cmd-slide-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
 `;

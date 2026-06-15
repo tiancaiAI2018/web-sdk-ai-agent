@@ -16,7 +16,16 @@
 import { WIDGET_CSS } from './styles';
 import { Skin, SkinRegistry, skinForTheme, resolveLayout } from '../core/skin';
 import type { SkinLayout } from '../core/skin';
-import type { ToolPanelItem } from '../core/types';
+import type { QuickCommand, ToolPanelItem } from '../core/types';
+import {
+  createCommandDropdown,
+  updateDropdownItems,
+  showDropdown,
+  hideDropdown,
+  isDropdownVisible,
+  setActiveIndex,
+  type CommandMatch,
+} from './components/command-dropdown';
 
 export interface WidgetOpts {
   title?: string;
@@ -55,6 +64,16 @@ export interface WidgetHandlers {
    * agent 接到后负责重新渲染对应页面内容(记忆/设置/历史是动态的)。
    */
   onPageChange?: (page: PageName) => void;
+  /**
+   * 快捷指令搜索回调 — 用户在输入框输入 `/xxx` 时由 widget 调用,
+   * 返回模糊匹配结果。返回空数组时 widget 隐藏下拉。
+   */
+  onCommandSearch?: (query: string) => CommandMatch[];
+  /**
+   * 快捷指令选中回调(键盘 Enter/Tab 或鼠标点击)。
+   * agent 接到后负责:执行 action / 填充 expandsTo / 插入 /{name}。
+   */
+  onCommandSelect?: (cmd: QuickCommand) => void;
 }
 
 export interface WidgetRefs {
@@ -141,6 +160,21 @@ export class Widget {
     settings: HTMLDivElement;
     history: HTMLDivElement;
   } | null = null;
+  /** 快捷指令下拉容器 DOM */
+  private _cmdDropdown: HTMLDivElement | null = null;
+  /**
+   * 快捷指令下拉运行时状态。
+   * - visible: 是否正在显示
+   * - items: 当前匹配列表(空 = 显示空状态)
+   * - activeIndex: 高亮项下标
+   * - slashStart: 当前斜杠命令在 textarea 中起始字符位置(0-based)
+   */
+  private _cmdState: {
+    visible: boolean;
+    items: CommandMatch[];
+    activeIndex: number;
+    slashStart: number;
+  } = { visible: false, items: [], activeIndex: 0, slashStart: 0 };
 
   constructor(
     private readonly opts: WidgetOpts,
@@ -311,6 +345,11 @@ export class Widget {
       settings: panel.querySelector('.aia-page-settings') as HTMLDivElement,
       history: panel.querySelector('.aia-page-history') as HTMLDivElement,
     };
+    // 快捷指令下拉:必须先有 inputBar 才能挂
+    const inputBarEl = panel.querySelector('.aia-page-chat .aiagent-sdk-inputbar') as HTMLElement;
+    this._cmdDropdown = createCommandDropdown(inputBarEl, {
+      onSelect: (index) => this._cmdSelectByIndex(index),
+    });
     this._renderSidebar();
     const closeBtn = panel.querySelector('.aiagent-sdk-close') as HTMLElement;
     const newBtn = panel.querySelector('.aiagent-sdk-new') as HTMLElement;
@@ -354,6 +393,30 @@ export class Widget {
       this.handlers.onSend();
     });
     ta.addEventListener('keydown', (e: KeyboardEvent) => {
+      // 1) 快捷指令下拉打开时,优先处理导航键
+      if (this._cmdDropdown && isDropdownVisible(this._cmdDropdown)) {
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          this._cmdMoveActive(1);
+          return;
+        }
+        if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          this._cmdMoveActive(-1);
+          return;
+        }
+        if (e.key === 'Enter' || e.key === 'Tab') {
+          e.preventDefault();
+          this._cmdSelectByIndex(this._cmdState.activeIndex);
+          return;
+        }
+        if (e.key === 'Escape') {
+          e.preventDefault();
+          this._cmdHide();
+          return;
+        }
+      }
+      // 2) 原有 Enter-to-send 逻辑
       if (e.key === 'Enter' && !e.shiftKey) {
         e.preventDefault();
         this._burstSend();
@@ -363,6 +426,19 @@ export class Widget {
     ta.addEventListener('input', () => {
       ta.style.height = 'auto';
       ta.style.height = Math.min(ta.scrollHeight, 80) + 'px';
+      // 检测斜杠命令 → 触发下拉
+      this._cmdHandleInput();
+    });
+    // 失焦时也隐藏下拉(避免点击外部时下拉还显示)
+    ta.addEventListener('blur', () => {
+      // 用 setTimeout 0 让 mousedown 先于 blur 触发
+      setTimeout(() => {
+        // 仅当焦点没有移到下拉项上时才隐藏
+        const active = document.activeElement;
+        if (this._cmdDropdown && !this._cmdDropdown.contains(active)) {
+          this._cmdHide();
+        }
+      }, 120);
     });
 
     // 8. 鼠标光斑跟随(mousemove → CSS 变量)
@@ -574,6 +650,189 @@ export class Widget {
         this.welcomeEl.classList.remove('aiagent-sdk-welcome-leaving');
       }
     }, 280);
+  }
+
+  // ====================================================================
+  // 快捷指令下拉(Quick Commands)
+  // ====================================================================
+
+  /**
+   * 检测 textarea 中是否正在输入斜杠命令。
+   * 规则:从光标位置往前找最近的 `/`,要求它在行首或前一个字符是空白。
+   * 找到后 query = `/` 之后到光标的文本(不含空格,否则认为已经"提交"了命令)。
+   */
+  private _cmdDetectSlash(ta: HTMLTextAreaElement): { start: number; query: string } | null {
+    const cursor = ta.selectionStart ?? 0;
+    const text = ta.value;
+    let i = cursor - 1;
+    while (i >= 0) {
+      const ch = text[i];
+      if (ch === '/') {
+        // 必须位于行首或前一个字符是空白
+        if (i === 0) {
+          const query = text.slice(i + 1, cursor);
+          if (/\s/.test(query)) return null;
+          return { start: i, query };
+        }
+        const prev = text[i - 1];
+        if (/\s/.test(prev)) {
+          const query = text.slice(i + 1, cursor);
+          if (/\s/.test(query)) return null;
+          return { start: i, query };
+        }
+        // `/` 前面是非空白(比如 "abc/") — 不算命令触发
+        return null;
+      }
+      if (/\s/.test(ch)) {
+        // 空格之后又遇到空白,没找到 `/`
+        return null;
+      }
+      i--;
+    }
+    return null;
+  }
+
+  /** input 事件处理:检测斜杠并触发搜索 */
+  private _cmdHandleInput(): void {
+    if (!this._cmdDropdown || !this.taEl) return;
+    if (typeof this.handlers.onCommandSearch !== 'function') return;
+
+    const detected = this._cmdDetectSlash(this.taEl);
+    if (!detected) {
+      if (this._cmdState.visible) this._cmdHide();
+      return;
+    }
+    const items = this.handlers.onCommandSearch(detected.query);
+    this._cmdState.slashStart = detected.start;
+    this._cmdState.items = items;
+    this._cmdState.activeIndex = 0;
+    if (items.length === 0) {
+      // 仍然显示下拉,提示"无匹配"
+      this._cmdShowEmpty();
+      return;
+    }
+    updateDropdownItems(this._cmdDropdown, items, 0);
+    showDropdown(this._cmdDropdown);
+    this._cmdState.visible = true;
+  }
+
+  /** 显示空状态 */
+  private _cmdShowEmpty(): void {
+    if (!this._cmdDropdown) return;
+    updateDropdownItems(this._cmdDropdown, [], 0);
+    showDropdown(this._cmdDropdown);
+    this._cmdState.visible = true;
+  }
+
+  /** 隐藏下拉 */
+  private _cmdHide(): void {
+    if (!this._cmdDropdown) return;
+    hideDropdown(this._cmdDropdown);
+    this._cmdState.visible = false;
+    this._cmdState.items = [];
+    this._cmdState.activeIndex = 0;
+  }
+
+  /** 移动高亮项(delta = +1 下移, -1 上移) */
+  private _cmdMoveActive(delta: number): void {
+    if (!this._cmdDropdown) return;
+    const n = this._cmdState.items.length;
+    if (n === 0) return;
+    let next = this._cmdState.activeIndex + delta;
+    if (next < 0) next = n - 1;
+    if (next >= n) next = 0;
+    this._cmdState.activeIndex = next;
+    setActiveIndex(this._cmdDropdown, next);
+  }
+
+  /** 选中第 index 项(委托给 agent 的 onCommandSelect) */
+  private _cmdSelectByIndex(index: number): void {
+    const item = this._cmdState.items[index];
+    if (!item) return;
+    this._cmdHide();
+    if (typeof this.handlers.onCommandSelect === 'function') {
+      this.handlers.onCommandSelect(item.cmd);
+    }
+  }
+
+  /**
+   * 外部(agent)调:用替换文本设置 textarea 值并定位光标。
+   * 行为:
+   *   - mode='replace' → 替换 [slashStart, slashStart+queryLen] 区间
+   *   - mode='append'  → 在 textarea 末尾追加 replace 字段
+   * 触发一次 input 事件让外部状态能感知(auto-grow 等)。
+   */
+  setInputFromCommand(opts: {
+    mode: 'replace' | 'append';
+    /** replace 模式:从 slashStart 开始删除的字符数(包含 / 和 query) */
+    deleteLen?: number;
+    /** 替换或追加的最终文本 */
+    replace: string;
+    /** 光标位置(undefined = 末尾) */
+    cursor?: number;
+  }): void {
+    if (!this.taEl) return;
+    const ta = this.taEl;
+    if (opts.mode === 'append') {
+      ta.value = ta.value + opts.replace;
+      ta.style.height = 'auto';
+      ta.style.height = Math.min(ta.scrollHeight, 80) + 'px';
+      ta.dispatchEvent(new Event('input', { bubbles: true }));
+      const pos = ta.value.length;
+      ta.setSelectionRange(pos, pos);
+      ta.focus();
+      return;
+    }
+    // replace
+    const start = this._cmdState.slashStart;
+    const deleteLen = opts.deleteLen ?? 0;
+    if (start < 0 || start + deleteLen > ta.value.length) {
+      // 兜底:位置已失效,降级为 append
+      ta.value = ta.value + opts.replace;
+    } else {
+      ta.value =
+        ta.value.slice(0, start) + opts.replace + ta.value.slice(start + deleteLen);
+    }
+    ta.style.height = 'auto';
+    ta.style.height = Math.min(ta.scrollHeight, 80) + 'px';
+    ta.dispatchEvent(new Event('input', { bubbles: true }));
+    const cursor =
+      opts.cursor !== undefined ? start + opts.cursor : start + opts.replace.length;
+    ta.setSelectionRange(cursor, cursor);
+    ta.focus();
+  }
+
+  /** 触发一次 input 事件(供 agent 在外部修改 textarea 后通知 widget) */
+  notifyInputChanged(): void {
+    if (this.taEl) {
+      this.taEl.dispatchEvent(new Event('input', { bubbles: true }));
+    }
+  }
+
+  /**
+   * 计算当前斜杠命令占据的字符数(含 `/` 本身和已输入的 query)。
+   * 供 agent 的 _executeCommand 用:替换时需要删除多少字符。
+   * 如果当前不在斜杠命令上下文中,返回 0(调用方应自行兜底)。
+   */
+  getSlashQueryLen(): number {
+    if (!this.taEl) return 0;
+    const cursor = this.taEl.selectionStart ?? 0;
+    if (!this._cmdState.visible) return 0;
+    // 删除长度 = cursor - slashStart
+    return Math.max(0, cursor - this._cmdState.slashStart);
+  }
+
+  /**
+   * 清空整个输入框,聚焦 textarea,触发 input 事件。
+   * 供 agent 在 action 模式选中后调:即时执行,文本不再有意义。
+   */
+  clearInput(): void {
+    if (!this.taEl) return;
+    this.taEl.value = '';
+    this.taEl.style.height = 'auto';
+    this.taEl.style.height = Math.min(this.taEl.scrollHeight, 80) + 'px';
+    this.taEl.dispatchEvent(new Event('input', { bubbles: true }));
+    this.taEl.focus();
   }
 
   /** 发送按钮点击:5 颗油彩色粒子向四周飞 */
