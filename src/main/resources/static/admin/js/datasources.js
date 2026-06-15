@@ -1,5 +1,9 @@
 /**
  * 数据源管理页面模块
+ *
+ * 表单使用动态组件:
+ * - AuthConfigForm: 认证配置按认证方式联动(api_key/bearer/basic)
+ * - KVEditor: headers 键值对编辑
  */
 const datasources = {
     title: '数据源管理',
@@ -50,36 +54,104 @@ const datasources = {
         }
     },
 
-    /** 生成数据源表单 HTML */
-    _formHtml(data = {}) {
+    /** 基础表单 HTML(不含动态组件) */
+    _baseFormHtml(data = {}) {
         return `
             <div class="form-group"><label>名称</label><input type="text" id="dsName" value="${data.name || ''}" placeholder="如: ERP字典API"></div>
             <div class="form-group"><label>类型</label><select id="dsType"><option value="rest" ${data.type==='rest'?'selected':''}>REST API</option></select></div>
             <div class="form-group"><label>URL</label><input type="text" id="dsUrl" value="${data.url || ''}" placeholder="如: http://localhost:3100"></div>
             <div class="form-group"><label>认证方式</label>
-                <select id="dsAuthType" onchange="datasources._toggleAuthFields()">
+                <select id="dsAuthType">
                     <option value="none" ${data.authType==='none'||!data.authType?'selected':''}>无认证</option>
                     <option value="api_key" ${data.authType==='api_key'?'selected':''}>API Key</option>
                     <option value="bearer" ${data.authType==='bearer'?'selected':''}>Bearer Token</option>
                     <option value="basic" ${data.authType==='basic'?'selected':''}>Basic Auth</option>
                 </select>
             </div>
-            <div class="form-group" id="dsAuthConfigGroup" style="display:none"><label>认证配置(JSON)</label>
-                <textarea id="dsAuthConfig" rows="3" placeholder='如: {"key":"xxx","header":"X-API-Key"}'>${data.authConfig || ''}</textarea>
-            </div>
+            <div class="form-group" id="dsAuthConfigGroup"><label>认证配置</label><div id="dsAuthConfigEditor"></div></div>
             <div class="form-group"><label>所属应用 Client ID</label><input type="text" id="dsOwnerId" value="${data.ownerId || ''}" placeholder="如: demo-app"></div>
-            <div class="form-group"><label>额外请求头(JSON,可选)</label><textarea id="dsHeaders" rows="2" placeholder='如: {"X-Custom":"value"}'>${data.headers || ''}</textarea></div>
+            <div class="form-group"><label>额外请求头(可选)</label><div id="dsHeadersEditor"></div></div>
         `;
     },
 
-    _toggleAuthFields() {
-        const type = document.getElementById('dsAuthType').value;
-        document.getElementById('dsAuthConfigGroup').style.display = type === 'none' ? 'none' : 'block';
+    /** 初始化动态表单组件 */
+    _initDynamicForms(data = {}) {
+        // 认证配置表单
+        datasources._renderAuthConfig(data.authType || 'none', data.authConfig || null);
+
+        // 认证方式切换 → 重新渲染配置表单
+        document.getElementById('dsAuthType').addEventListener('change', (e) => {
+            datasources._renderAuthConfig(e.target.value, null);
+        });
+
+        // Headers KV 编辑器
+        KVEditor.render(
+            document.getElementById('dsHeadersEditor'),
+            data.headers || null,
+            { keyPlaceholder: 'Header 名', valuePlaceholder: 'Header 值', title: '请求头' }
+        );
+    },
+
+    /** 渲染认证配置表单(按认证方式联动) */
+    _renderAuthConfig(authType, jsonStr) {
+        const container = document.getElementById('dsAuthConfigEditor');
+        const group = document.getElementById('dsAuthConfigGroup');
+
+        if (authType === 'none') {
+            group.style.display = 'none';
+            container.innerHTML = '';
+            return;
+        }
+
+        group.style.display = 'block';
+        const data = this._parseAuthConfig(jsonStr);
+
+        let html = '<div class="proc-config-form"><div class="proc-fields">';
+        switch (authType) {
+            case 'api_key':
+                html += `
+                    <div class="proc-field"><label>Header 名称</label><input type="text" data-auth-key="header" value="${SchemaEditor._esc(data.header || 'X-API-Key')}" placeholder="X-API-Key"></div>
+                    <div class="proc-field"><label>API Key 值</label><input type="text" data-auth-key="key" value="${SchemaEditor._esc(data.key || '')}" placeholder="输入 API Key"></div>
+                `;
+                break;
+            case 'bearer':
+                html += `
+                    <div class="proc-field"><label>Token</label><input type="text" data-auth-key="token" value="${SchemaEditor._esc(data.token || '')}" placeholder="输入 Bearer Token"></div>
+                `;
+                break;
+            case 'basic':
+                html += `
+                    <div class="proc-field"><label>用户名</label><input type="text" data-auth-key="username" value="${SchemaEditor._esc(data.username || '')}" placeholder="用户名"></div>
+                    <div class="proc-field"><label>密码</label><input type="password" data-auth-key="password" value="${SchemaEditor._esc(data.password || '')}" placeholder="密码"></div>
+                `;
+                break;
+        }
+        html += '</div></div>';
+        container.innerHTML = html;
+    },
+
+    /** 收集认证配置 → JSON 字符串 */
+    _collectAuthConfig() {
+        const authType = document.getElementById('dsAuthType').value;
+        if (authType === 'none') return null;
+
+        const result = {};
+        document.querySelectorAll('#dsAuthConfigEditor [data-auth-key]').forEach(input => {
+            const key = input.dataset.authKey;
+            const val = input.value.trim();
+            if (val) result[key] = val;
+        });
+        return Object.keys(result).length > 0 ? JSON.stringify(result) : null;
+    },
+
+    _parseAuthConfig(jsonStr) {
+        if (!jsonStr || !jsonStr.trim()) return {};
+        try { return JSON.parse(jsonStr); } catch { return {}; }
     },
 
     showCreateModal() {
-        openModal('新增数据源', this._formHtml() + `<button class="btn-primary" onclick="datasources.createDS()" style="margin-top:12px">创建</button>`);
-        this._toggleAuthFields();
+        openModal('新增数据源', this._baseFormHtml() + `<button class="btn-primary" onclick="datasources.createDS()" style="margin-top:12px">创建</button>`);
+        this._initDynamicForms();
     },
 
     async showEditModal(id) {
@@ -87,21 +159,23 @@ const datasources = {
             const list = await AdminAPI.datasources.list();
             const ds = list.find(d => d.id === id);
             if (!ds) { showToast('数据源不存在', 'error'); return; }
-            openModal('编辑数据源', this._formHtml(ds) + `<button class="btn-primary" onclick="datasources.updateDS('${id}')" style="margin-top:12px">保存</button>`);
-            this._toggleAuthFields();
+            openModal('编辑数据源', this._baseFormHtml(ds) + `<button class="btn-primary" onclick="datasources.updateDS('${id}')" style="margin-top:12px">保存</button>`);
+            this._initDynamicForms(ds);
         } catch (e) { showToast('加载失败: ' + e.message, 'error'); }
     },
 
     _collectForm() {
         const authType = document.getElementById('dsAuthType').value;
+        const headers = KVEditor.collect(document.getElementById('dsHeadersEditor'));
+
         return {
             name: document.getElementById('dsName').value.trim(),
             type: document.getElementById('dsType').value,
             url: document.getElementById('dsUrl').value.trim(),
             authType,
-            authConfig: authType !== 'none' ? document.getElementById('dsAuthConfig').value.trim() : null,
+            authConfig: this._collectAuthConfig(),
             ownerId: document.getElementById('dsOwnerId').value.trim(),
-            headers: document.getElementById('dsHeaders').value.trim() || null
+            headers: Object.keys(headers).length > 0 ? JSON.stringify(headers) : null
         };
     },
 

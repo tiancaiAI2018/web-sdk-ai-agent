@@ -81,7 +81,7 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 
 /* ===== 模态框 ===== */
 .modal-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); display: flex; align-items: center; justify-content: center; z-index: 1000; }
-.modal-card { background: var(--card-bg); border-radius: 12px; width: 500px; max-width: 90vw; max-height: 80vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
+.modal-card { background: var(--card-bg); border-radius: 12px; width: 640px; max-width: 90vw; max-height: 85vh; overflow-y: auto; box-shadow: 0 20px 60px rgba(0,0,0,0.2); }
 .modal-header { padding: 16px 20px; border-bottom: 1px solid var(--border); display: flex; justify-content: space-between; align-items: center; }
 .modal-header h3 { font-size: 16px; }
 .btn-close { background: none; border: none; font-size: 20px; cursor: pointer; color: var(--text-muted); }
