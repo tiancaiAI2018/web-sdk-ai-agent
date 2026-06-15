@@ -368,7 +368,21 @@
             ', 数量: ' + payload.quantity +
             ', 金额: ' + (payload.quantity * payload.unitPrice) + '元';
         }
-      }]
+      }],
+      // 页面感知:捕获宿主页面的 JS 报错、接口错误、错误弹窗,注入给 AI
+      pageAwareness: {
+        enabled: true,
+        onError: function(err) {
+          log('页面感知捕获: [' + err.source + '] ' + err.message);
+        }
+      },
+      // v6:记忆系统(纯前端 localStorage,跨会话记住用户偏好/事实/历史)
+      memory: {
+        enabled: true,
+        onMemoryChange: function(entries) {
+          log('记忆变更: 当前 ' + entries.length + ' 条');
+        }
+      }
     });
 
     // ===== 1.5 注册内置 changeSkin 工具 =====

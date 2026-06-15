@@ -41,9 +41,21 @@ import {
   renderToolResultFailedCard,
   resumePendingToolResults,
   pageErrorsTool,
+  saveMemoryTool,
+  recallMemoryTool,
   type ToolCtx,
 } from './tools';
 import { PageAwareness, type PageAwarenessHost } from './page-awareness';
+import {
+  MemoryEngine,
+  type MemoryEntry,
+  type MemoryCategory,
+  type MemoryOptions,
+  type MemorySaveInput,
+} from './memory';
+import { mountMemoryPage, type MemoryPageHandle } from '../ui/pages/memory';
+import { mountSettingsPage, type SettingsPageHandle } from '../ui/pages/settings';
+import { mountHistoryPage, type HistoryPageHandle } from '../ui/pages/history';
 import { Widget } from '../ui/widget';
 import { applyTheme, DEFAULT_THEME } from '../ui/theme';
 import { Skin, SkinRegistry } from './skin';
@@ -124,7 +136,7 @@ export class AIAgent {
     clientPrefix: string;
     persistentTools: ToolDef[];
     /** 内置工具开关 */
-    builtinTools: { changeSkin?: boolean; pageErrors?: boolean };
+    builtinTools: { changeSkin?: boolean; pageErrors?: boolean; memory?: boolean };
     /** 皮肤名(iridescent-bloom / classic / 自定义) */
     skin: string;
   };
@@ -166,6 +178,17 @@ export class AIAgent {
   _thinkingBuf: string = '';
   /** 页面感知模块(init 时按需创建,enabled=false 时为 null) */
   _pageAwareness: PageAwareness | null = null;
+  /**
+   * 记忆引擎(init 时按需创建)。
+   * enabled=false / 未配置 时为 null。
+   */
+  _memory: MemoryEngine | null = null;
+  /** 记忆浏览页 handle(切到 memory 页时挂载,只在非 null 时激活) */
+  _memoryPage: MemoryPageHandle | null = null;
+  /** 设置页 handle(切到 settings 页时挂载) */
+  _settingsPage: SettingsPageHandle | null = null;
+  /** 历史会话页 handle */
+  _historyPage: HistoryPageHandle | null = null;
   /**
    * tool_call_delta 累积中的占位卡:toolUseId → 卡片 DOM。
    * 完整 tool_call last 帧来时,从这里取卡 promote 成完整卡。
@@ -215,8 +238,17 @@ export class AIAgent {
         this._handleToolPanelToggle(name, isOn, isAutoManaged),
       onToolPanelAction: (name: string) =>
         this._handleToolPanelAction(name),
+      onPageChange: (page) => this._handlePageChange(page),
     });
     this._widget.mount();
+
+    // 侧边栏:配置哪些页面可见。memory.enabled=true → memory 页可见;其它默认 settings。
+    this._widget.setPageConfig({
+      chat: true,
+      memory: !!opts.memory?.enabled,
+      settings: true,
+      history: !!(opts.pages && opts.pages.history),
+    });
 
     if (this._opts.autoOpen) this.open();
 
@@ -246,6 +278,20 @@ export class AIAgent {
       }
     }
 
+    // ===== 记忆系统(可选)=====
+    // 纯前端 localStorage 持久化,与现有 changeSkin/pageErrors 一样走内置工具注册机制
+    if (opts.memory?.enabled) {
+      this._memory = new MemoryEngine(opts.memory);
+      this._memory.enable();
+
+      // 显式传 builtinTools.memory === false 才不注册工具
+      const memoryBuiltinOn = opts.builtinTools?.memory !== false;
+      if (memoryBuiltinOn) {
+        AIAgent.registerBuiltinTool(saveMemoryTool(this._memory));
+        AIAgent.registerBuiltinTool(recallMemoryTool(this._memory));
+      }
+    }
+
     // 启动时扫 sessionStorage 续传上次未提交的 tool result(异步,不影响 init)
     setTimeout(() => {
       void this._resumePendingToolResults();
@@ -261,6 +307,14 @@ export class AIAgent {
   destroy(): void {
     this._pageAwareness?.stop();
     this._pageAwareness = null;
+    this._memory?.disable();
+    this._memory = null;
+    this._memoryPage?.destroy();
+    this._memoryPage = null;
+    this._settingsPage?.destroy();
+    this._settingsPage = null;
+    this._historyPage?.destroy();
+    this._historyPage = null;
     if (this._widget) {
       this._widget.destroy();
       this._widget = null;
@@ -550,6 +604,168 @@ export class AIAgent {
   /** 手动上报一条页面错误到缓冲区(宿主页面集成用) */
   reportPageError(error: Partial<PageError>): void {
     this._pageAwareness?.report(error);
+  }
+
+  // ====================================================================
+  // 公共 API — 记忆系统
+  // ====================================================================
+
+  /** 启用记忆系统(从 localStorage 加载已保存记忆) */
+  enableMemory(): void {
+    this._memory?.enable();
+  }
+
+  /** 关闭记忆系统(清空内存索引,数据保留) */
+  disableMemory(): void {
+    this._memory?.disable();
+  }
+
+  /** 记忆系统是否已启用 */
+  isMemoryEnabled(): boolean {
+    return this._memory?.isEnabled() ?? false;
+  }
+
+  /**
+   * 程序化保存一条记忆。
+   * @returns 成功返回 MemoryEntry;容量满时返回 CapacityErrorResult(带候选列表);
+   *          未启用记忆系统时返回 null。
+   */
+  saveMemory(input: MemorySaveInput): MemoryEntry | import('./memory').CapacityErrorResult | null {
+    if (!this._memory) return null;
+    try {
+      return this._memory.upsert(input);
+    } catch (e) {
+      // CapacityError 直接返回结构化结果
+      if (e && typeof e === 'object' && (e as { name?: string }).name === 'CapacityError') {
+        return e as import('./memory').CapacityErrorResult;
+      }
+      throw e;
+    }
+  }
+
+  /** 程序化检索记忆 */
+  recallMemory(query: string, opts?: { limit?: number; category?: MemoryCategory }): MemoryEntry[] {
+    if (!this._memory) return [];
+    return this._memory.search(query, { ...opts, touch: false });
+  }
+
+  /** 列出所有记忆(可按类别过滤) */
+  listMemories(filter?: { category?: MemoryCategory; pinned?: boolean }): MemoryEntry[] {
+    if (!this._memory) return [];
+    return this._memory.list(filter);
+  }
+
+  /** 删除一条记忆 */
+  deleteMemory(id: string): boolean {
+    return this._memory?.delete(id) ?? false;
+  }
+
+  /** 清空所有记忆 */
+  clearMemories(): void {
+    this._memory?.clear();
+  }
+
+  /** 导出记忆为 JSON 字符串(可用于备份/迁移) */
+  exportMemories(): string {
+    return this._memory?.export() ?? '{"version":1,"entries":[]}';
+  }
+
+  /** 从 JSON 字符串导入记忆,返回实际导入条数 */
+  importMemories(json: string): number {
+    if (!this._memory) return 0;
+    return this._memory.import(json);
+  }
+
+  /** 订阅记忆变更事件(UI 用),返回取消订阅函数 */
+  onMemoryChange(cb: (entries: MemoryEntry[]) => void): () => void {
+    if (!this._memory) return () => {};
+    return this._memory.onChange(cb);
+  }
+
+  // ====================================================================
+  // 公共 API — 页面导航
+  // ====================================================================
+
+  /** 切换浮窗页面('chat' / 'memory' / 'settings' / 'history') */
+  switchPage(page: 'chat' | 'memory' | 'settings' | 'history'): void {
+    if (this._widget) this._widget.switchPage(page);
+  }
+
+  /** 获取当前活动页 */
+  getCurrentPage(): string {
+    return this._widget?.getCurrentPage() || 'chat';
+  }
+
+  /**
+   * 内部:widget 切页回调。
+   * 负责按需挂载对应 page(懒挂载:每次切到才 mount,切走时保留以便再次切回快速显示)。
+   */
+  private _handlePageChange(page: 'chat' | 'memory' | 'settings' | 'history'): void {
+    if (!this._widget) return;
+    const refs = this._widget.getRefs();
+    if (!refs) return;
+
+    if (page === 'memory') {
+      if (!this._memory) {
+        // 未启用,显示提示
+        refs.memoryPageEl.innerHTML =
+          '<div class="aia-page-empty">' +
+          '<div class="aia-page-empty-icon">🧠</div>' +
+          '<div class="aia-page-empty-title">记忆系统未启用</div>' +
+          '<div class="aia-page-empty-hint">请在 init 时配 memory: { enabled: true }</div>' +
+          '</div>';
+        return;
+      }
+      if (!this._memoryPage) {
+        const self = this;
+        this._memoryPage = mountMemoryPage(refs.memoryPageEl, this._memory, {
+          onConfirmClear: () => {
+            try {
+              return confirm('确定清空所有记忆？此操作不可恢复。');
+            } catch {
+              return false;
+            }
+          },
+          onToast: (msg, level) => {
+            try {
+              self._appendMsg('system', `[Memory] ${msg}`);
+            } catch {
+              /* 静默 */
+            }
+            void level;
+          },
+        });
+      } else {
+        this._memoryPage.refresh();
+      }
+    } else if (page === 'settings') {
+      if (!this._settingsPage) {
+        const self = this;
+        this._settingsPage = mountSettingsPage(refs.settingsPageEl, {
+          getTheme: () => self._opts.theme,
+          setTheme: (t) => self.setTheme({ theme: t }),
+          getCurrentSkin: () => self._widget?.getSkin()?.name || 'iridescent-bloom',
+          setSkin: (name) => self.setSkin(name),
+          memory: self._memory,
+          onToggleMemory: (enabled) => {
+            if (enabled) self.enableMemory();
+            else self.disableMemory();
+            self._settingsPage?.refresh();
+          },
+          onGoToMemory: () => self.switchPage('memory'),
+          sdkVersion: '5.0.0',
+          sessionId: self._chatSessionId,
+        });
+      } else {
+        this._settingsPage.refresh();
+      }
+    } else if (page === 'history') {
+      if (!this._historyPage) {
+        this._historyPage = mountHistoryPage(refs.historyPageEl);
+      } else {
+        this._historyPage.refresh();
+      }
+    }
   }
 
   // ====================================================================
@@ -970,6 +1186,17 @@ export class AIAgent {
     if (this._pageAwareness?.isEnabled()) {
       const ctxBlock = this._pageAwareness.buildContextBlock();
       if (ctxBlock) apiMessage = ctxBlock + '\n\n' + text;
+    }
+
+    // ===== 记忆系统:注入 [Memory Index] 目录到消息头部 =====
+    // 目录模式:只列 key 不展开 value,token 友好。
+    // 非 pinned 部分用 userQuery(text)做模糊匹配,让 AI 知道"有这些可查"。
+    // AI 真要看具体内容 → 调 recall_memory({query})。
+    if (this._memory?.isEnabled()) {
+      const memBlock = this._memory.buildContextBlock(text);
+      if (memBlock) {
+        apiMessage = (apiMessage === text ? '' : apiMessage + '\n\n') + memBlock + '\n\n' + text;
+      }
     }
 
     const postOpts: {

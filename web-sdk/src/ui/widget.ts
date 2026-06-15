@@ -50,6 +50,11 @@ export interface WidgetHandlers {
    * 工具面板 action 执行回调。
    */
   onToolPanelAction?: (name: string) => void | Promise<void>;
+  /**
+   * 页面切换回调(用户在侧边栏点 💬/🧠/⚙️/📜 时触发)。
+   * agent 接到后负责重新渲染对应页面内容(记忆/设置/历史是动态的)。
+   */
+  onPageChange?: (page: PageName) => void;
 }
 
 export interface WidgetRefs {
@@ -59,6 +64,23 @@ export interface WidgetRefs {
   msgEl: HTMLDivElement;
   taEl: HTMLTextAreaElement;
   sendBtn: HTMLButtonElement;
+  /** 侧边栏 DOM(包含 4 个 icon 按钮) */
+  sidebarEl: HTMLDivElement | null;
+  /** 当前活动页对应的 DOM(chat 永远是 messages,其它页是动态注入) */
+  memoryPageEl: HTMLDivElement;
+  settingsPageEl: HTMLDivElement;
+  historyPageEl: HTMLDivElement;
+}
+
+/** 浮窗页面名 */
+export type PageName = 'chat' | 'memory' | 'settings' | 'history';
+
+/** 侧边栏配置(决定哪些页面可见) */
+export interface WidgetPageConfig {
+  chat?: boolean;     // 默认 true,不可关
+  memory?: boolean;   // 默认 false(由 init 时根据 memory.enabled 决定)
+  settings?: boolean; // 默认 true
+  history?: boolean;  // 默认 false(预留)
 }
 
 const SEND_ICON_SVG = `
@@ -98,6 +120,27 @@ export class Widget {
   private _toolPanelOpen = false;
   /** 页面感知错误角标(气泡上的红色数字) */
   private _errorBadge: HTMLSpanElement | null = null;
+  /**
+   * 当前活动页(默认 'chat')。切换时更新 DOM 显隐,并触发 onPageChange。
+   */
+  private _currentPage: PageName = 'chat';
+  /**
+   * 页面可见性配置(由 agent 在 init 时根据 opts.pages 决定)。
+   */
+  private _pageConfig: Required<WidgetPageConfig> = {
+    chat: true,
+    memory: false,
+    settings: true,
+    history: false,
+  };
+  /** 侧边栏 DOM(init 时填充) */
+  private _sidebarEl: HTMLDivElement | null = null;
+  /** 3 个非 chat 页面的容器(memory / settings / history) */
+  private _pageEls: {
+    memory: HTMLDivElement;
+    settings: HTMLDivElement;
+    history: HTMLDivElement;
+  } | null = null;
 
   constructor(
     private readonly opts: WidgetOpts,
@@ -115,7 +158,8 @@ export class Widget {
       !this.panel ||
       !this.msgEl ||
       !this.taEl ||
-      !this.sendBtn
+      !this.sendBtn ||
+      !this._pageEls
     ) {
       return null;
     }
@@ -126,6 +170,10 @@ export class Widget {
       msgEl: this.msgEl,
       taEl: this.taEl,
       sendBtn: this.sendBtn,
+      sidebarEl: this._sidebarEl,
+      memoryPageEl: this._pageEls.memory,
+      settingsPageEl: this._pageEls.settings,
+      historyPageEl: this._pageEls.history,
     };
   }
 
@@ -221,14 +269,24 @@ export class Widget {
       '    <button class="aiagent-sdk-iconbtn aiagent-sdk-close" title="关闭" aria-label="关闭">✕</button>',
       '  </div>',
       '</div>',
-      // 欢迎区(专属,非消息,默认隐藏)
-      '<div class="aiagent-sdk-welcome" hidden></div>',
-      // 消息区
-      '<div class="aiagent-sdk-messages" role="log" aria-live="polite"></div>',
-      // 输入栏(SVG 箭头)
-      '<div class="aiagent-sdk-inputbar">',
-      '  <textarea rows="1" placeholder="" aria-label="输入消息"></textarea>',
-      `  <button class="aiagent-sdk-send" aria-label="发送">${sendIconHTML}</button>`,
+      // 侧边栏导航 + 主体内容(2 列布局)
+      '<div class="aiagent-sdk-body">',
+      '  <nav class="aiagent-sdk-sidebar" aria-label="页面导航"></nav>',
+      '  <div class="aiagent-sdk-main">',
+      // chat 页面(默认显示)
+      '    <div class="aiagent-sdk-page aia-page-chat" data-page="chat">',
+      '      <div class="aiagent-sdk-welcome" hidden></div>',
+      '      <div class="aiagent-sdk-messages" role="log" aria-live="polite"></div>',
+      '      <div class="aiagent-sdk-inputbar">',
+      '        <textarea rows="1" placeholder="" aria-label="输入消息"></textarea>',
+      `        <button class="aiagent-sdk-send" aria-label="发送">${sendIconHTML}</button>`,
+      '      </div>',
+      '    </div>',
+      // 记忆 / 设置 / 历史 页面(默认隐藏)
+      '    <div class="aiagent-sdk-page aia-page-memory" data-page="memory" hidden></div>',
+      '    <div class="aiagent-sdk-page aia-page-settings" data-page="settings" hidden></div>',
+      '    <div class="aiagent-sdk-page aia-page-history" data-page="history" hidden></div>',
+      '  </div>',
       '</div>',
     ].join('');
     shadow.appendChild(panel);
@@ -243,10 +301,17 @@ export class Widget {
     ta.placeholder = this.opts.placeholder || '输入消息,Enter 发送,Shift+Enter 换行';
 
     // 7. 引用 + 事件
-    this.msgEl = panel.querySelector('.aiagent-sdk-messages') as HTMLDivElement;
+    this.msgEl = panel.querySelector('.aia-page-chat .aiagent-sdk-messages') as HTMLDivElement;
     this.taEl = ta;
-    this.sendBtn = panel.querySelector('.aiagent-sdk-send') as HTMLButtonElement;
-    this.welcomeEl = panel.querySelector('.aiagent-sdk-welcome') as HTMLDivElement;
+    this.sendBtn = panel.querySelector('.aia-page-chat .aiagent-sdk-send') as HTMLButtonElement;
+    this.welcomeEl = panel.querySelector('.aia-page-chat .aiagent-sdk-welcome') as HTMLDivElement;
+    this._sidebarEl = panel.querySelector('.aiagent-sdk-sidebar') as HTMLDivElement;
+    this._pageEls = {
+      memory: panel.querySelector('.aia-page-memory') as HTMLDivElement,
+      settings: panel.querySelector('.aia-page-settings') as HTMLDivElement,
+      history: panel.querySelector('.aia-page-history') as HTMLDivElement,
+    };
+    this._renderSidebar();
     const closeBtn = panel.querySelector('.aiagent-sdk-close') as HTMLElement;
     const newBtn = panel.querySelector('.aiagent-sdk-new') as HTMLElement;
     const thinkingBtn = panel.querySelector('.aiagent-sdk-toggle-thinking') as HTMLElement | null;
@@ -352,6 +417,9 @@ export class Widget {
     this.mounted = false;
     // isOpen 留着 —— applySkin 会用,决定新 mount 后是否要 open
     this.onMouseMove = null;
+    this._sidebarEl = null;
+    this._pageEls = null;
+    this._currentPage = 'chat';
   }
 
   /**
@@ -721,5 +789,116 @@ export class Widget {
     if (typeof this.handlers.onToolPanelAction === 'function') {
       this.handlers.onToolPanelAction(name);
     }
+  }
+
+  // ====================================================================
+  // 侧边栏导航 + 多页面切换
+  // ====================================================================
+
+  /**
+   * 配置哪些页面可见(agent 在 init 时根据 opts.pages 调用)。
+   * 必须在 mount() 之前或 mount() 之后第一次调(mount 之后调会触发 _renderSidebar)。
+   */
+  setPageConfig(cfg: WidgetPageConfig): void {
+    this._pageConfig = {
+      chat: cfg.chat !== false,
+      memory: !!cfg.memory,
+      settings: cfg.settings !== false,
+      history: !!cfg.history,
+    };
+    if (this.mounted) this._renderSidebar();
+  }
+
+  /** 切换到指定页面(切换 DOM 显隐 + 触发 onPageChange 回调) */
+  switchPage(page: PageName): void {
+    if (!this._pageConfig[page]) return;
+    if (this._currentPage === page) return;
+    if (!this._pageEls) return;
+
+    const prev = this._currentPage;
+    this._currentPage = page;
+
+    // DOM 显隐切换
+    const pageElMap: Record<PageName, HTMLElement | null> = {
+      chat: this.msgEl?.parentElement || null, // .aia-page-chat
+      memory: this._pageEls.memory,
+      settings: this._pageEls.settings,
+      history: this._pageEls.history,
+    };
+    for (const [name, el] of Object.entries(pageElMap) as [PageName, HTMLElement | null][]) {
+      if (!el) continue;
+      el.hidden = name !== page;
+    }
+
+    // 侧边栏 active 态
+    this._updateSidebarActive();
+
+    // 回调
+    if (typeof this.handlers.onPageChange === 'function') {
+      try {
+        this.handlers.onPageChange(page);
+      } catch (e) {
+        try {
+          console.warn('[AIAgent SDK] onPageChange failed:', e);
+        } catch {
+          /* 静默 */
+        }
+      }
+    }
+
+    // 控制台调试信息(用户开 DevTools 时能看到切页)
+    try {
+      console.log('[AIAgent SDK 📄]', prev, '→', page);
+    } catch {
+      /* 静默 */
+    }
+  }
+
+  /** 获取当前活动页 */
+  getCurrentPage(): PageName {
+    return this._currentPage;
+  }
+
+  /** 渲染侧边栏导航按钮(根据 _pageConfig 决定哪些出现) */
+  private _renderSidebar(): void {
+    if (!this._sidebarEl) return;
+    const items: Array<{ name: PageName; icon: string; label: string }> = [
+      { name: 'chat', icon: '💬', label: '对话' },
+    ];
+    if (this._pageConfig.memory) {
+      items.push({ name: 'memory', icon: '🧠', label: '记忆' });
+    }
+    if (this._pageConfig.settings) {
+      items.push({ name: 'settings', icon: '⚙️', label: '设置' });
+    }
+    if (this._pageConfig.history) {
+      items.push({ name: 'history', icon: '📜', label: '历史' });
+    }
+
+    this._sidebarEl.innerHTML = items
+      .map(
+        (it) =>
+          `<button class="aiagent-sdk-nav-item" data-page="${it.name}" title="${it.label}" aria-label="${it.label}">${it.icon}</button>`
+      )
+      .join('');
+
+    // 绑定 click
+    this._sidebarEl.querySelectorAll('.aiagent-sdk-nav-item').forEach((el) => {
+      el.addEventListener('click', (e) => {
+        const page = (e.currentTarget as HTMLElement).dataset.page as PageName;
+        this.switchPage(page);
+      });
+    });
+
+    this._updateSidebarActive();
+  }
+
+  /** 侧边栏 active 态切换 */
+  private _updateSidebarActive(): void {
+    if (!this._sidebarEl) return;
+    this._sidebarEl.querySelectorAll('.aiagent-sdk-nav-item').forEach((el) => {
+      const page = (el as HTMLElement).dataset.page;
+      el.classList.toggle('aia-nav-active', page === this._currentPage);
+    });
   }
 }

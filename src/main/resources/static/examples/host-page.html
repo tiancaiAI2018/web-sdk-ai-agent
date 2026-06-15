@@ -171,6 +171,36 @@
     </button>
     <p style="font-size:12px; color:#6b7280;">AI 会自动调 validate_form → 收到错误列表 → 追问你补字段 → 重试 → submit_form。</p>
   </div>
+
+  <!-- 7. 记忆系统 -->
+  <div class="demo-section" style="border-left-color:#8b5cf6; background:#f5f3ff;">
+    <h3 style="color:#6d28d9;">7. 记忆系统 (save_memory / recall_memory)</h3>
+    <p>纯前端 localStorage 持久化。AI 调 save/recall 工具,或程序化调 agent.saveMemory / recallMemory。</p>
+    <p><strong>程序化 API</strong></p>
+    <button id="btn-mem-save-pref">保存偏好 (城市=北京)</button>
+    <button id="btn-mem-save-fact">保存事实 (电话=138...)</button>
+    <button id="btn-mem-save-hist">保存历史 (上次单号)</button>
+    <button id="btn-mem-save-pin">保存并置顶 (默认仓库)</button>
+    <button id="btn-mem-recall">模糊检索 "北京"</button>
+    <button id="btn-mem-list">列出全部记忆</button>
+    <button id="btn-mem-export">导出 JSON</button>
+    <button id="btn-mem-clear">清空全部</button>
+    <p style="margin-top:8px;"><strong>端到端</strong></p>
+    <button id="btn-mem-e2e" style="background:#ede9fe; border-color:#a78bfa;">
+      打开浮窗 → 告诉 AI "记住我在北京,客户编码 C001" → 验证 AI 调 save_memory
+    </button>
+    <p style="font-size:12px; color:#6b7280;">AI 会调 save_memory 两次;再开新会话说"帮我录一单",AI 应该自动用"北京 + C001"。</p>
+  </div>
+
+  <!-- 8. 浮窗导航 -->
+  <div class="demo-section" style="border-left-color:#06b6d4; background:#ecfeff;">
+    <h3 style="color:#0e7490;">8. 浮窗多页面导航 (侧边栏)</h3>
+    <p>浮窗左侧 icon 栏:💬 对话 / 🧠 记忆 / ⚙️ 设置 / 📜 历史(v1 不开)。点击切换,消息历史保留。</p>
+    <button id="btn-page-chat" style="background:#0e7490;color:#fff;">切到 💬 对话</button>
+    <button id="btn-page-memory" style="background:#0e7490;color:#fff;">切到 🧠 记忆</button>
+    <button id="btn-page-settings" style="background:#0e7490;color:#fff;">切到 ⚙️ 设置</button>
+    <button id="btn-page-history" style="background:#0e7490;color:#fff;">切到 📜 历史</button>
+  </div>
   </details>
 
   <div style="margin-top:16px;">
@@ -308,6 +338,13 @@
         enabled: true,
         onError: function(err) {
           log('页面感知捕获: [' + err.source + '] ' + err.message);
+        }
+      },
+      // v6:记忆系统(纯前端 localStorage,跨会话记住用户偏好/事实/历史)
+      memory: {
+        enabled: true,
+        onMemoryChange: function(entries) {
+          log('记忆变更: 当前 ' + entries.length + ' 条');
         }
       }
     });
@@ -961,6 +998,66 @@
         log('=== 提示:AI 收到的消息头部包含 [Page Context] 区块,但你发的消息在 UI 里不变 ===');
       }, 500);
     });
+
+    // ===== 7. 记忆系统测试 =====
+    document.getElementById('btn-mem-save-pref').addEventListener('click', function () {
+      agent.saveMemory({ key: 'city', value: '北京', category: 'preference', pinned: true, scope: 'global' });
+      log('已保存偏好: city=北京 (置顶)');
+    });
+    document.getElementById('btn-mem-save-fact').addEventListener('click', function () {
+      agent.saveMemory({ key: 'customer_phone', value: '13800138000', category: 'fact', scope: 'global' });
+      log('已保存事实: customer_phone=13800138000');
+    });
+    document.getElementById('btn-mem-save-hist').addEventListener('click', function () {
+      agent.saveMemory({ key: 'last_order', value: 'ORD-2024-087', category: 'history', scope: 'global' });
+      log('已保存历史: last_order=ORD-2024-087');
+    });
+    document.getElementById('btn-mem-save-pin').addEventListener('click', function () {
+      agent.saveMemory({ key: 'default_warehouse', value: 'BJ-北京中心仓', category: 'preference', pinned: true, scope: 'global', tags: ['仓库', '常用'] });
+      log('已保存并置顶: default_warehouse=BJ');
+    });
+    document.getElementById('btn-mem-recall').addEventListener('click', function () {
+      var hits = agent.recallMemory('北京');
+      log('recallMemory("北京") 命中 ' + hits.length + ' 条');
+      hits.forEach(function (h) { log('  - ' + h.key + ' = ' + h.value + (h.pinned ? ' 📌' : '')); });
+    });
+    document.getElementById('btn-mem-list').addEventListener('click', function () {
+      var list = agent.listMemories();
+      log('listMemories() 共 ' + list.length + ' 条:');
+      list.forEach(function (h) { log('  - [' + h.category + '] ' + h.key + ' = ' + h.value + (h.pinned ? ' 📌' : '')); });
+    });
+    document.getElementById('btn-mem-export').addEventListener('click', function () {
+      var json = agent.exportMemories();
+      log('exportMemories() 长度: ' + json.length + ' 字符 (前 100: ' + json.slice(0, 100) + '...)');
+    });
+    document.getElementById('btn-mem-clear').addEventListener('click', function () {
+      if (confirm('确定清空所有记忆?')) {
+        agent.clearMemories();
+        log('已清空全部记忆');
+      }
+    });
+    document.getElementById('btn-mem-e2e').addEventListener('click', function () {
+      agent.open();
+      setTimeout(function () {
+        var ta = document.querySelector('.aiagent-sdk-host textarea');
+        if (ta) {
+          ta.value = '记住:我在北京,客户编码 C001';
+          ta.dispatchEvent(new Event('input', { bubbles: true }));
+          // 触发发送
+          var sendBtn = document.querySelector('.aiagent-sdk-host .aiagent-sdk-send');
+          if (sendBtn) sendBtn.click();
+          log('已发送测试消息 → AI 应调 save_memory 两次');
+        } else {
+          log('找不到浮窗 textarea,请先打开浮窗');
+        }
+      }, 500);
+    });
+
+    // ===== 8. 浮窗页面导航 =====
+    document.getElementById('btn-page-chat').addEventListener('click', function () { agent.switchPage('chat'); log('已切到 💬 对话页'); });
+    document.getElementById('btn-page-memory').addEventListener('click', function () { agent.switchPage('memory'); log('已切到 🧠 记忆页'); });
+    document.getElementById('btn-page-settings').addEventListener('click', function () { agent.switchPage('settings'); log('已切到 ⚙️ 设置页'); });
+    document.getElementById('btn-page-history').addEventListener('click', function () { agent.switchPage('history'); log('已切到 📜 历史页 (v1 占位)'); });
 
     // ===== 5. 打开浮窗对话 =====
     document.getElementById('trigger-chat').addEventListener('click', function () {

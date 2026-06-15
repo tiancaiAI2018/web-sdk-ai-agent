@@ -52,7 +52,7 @@ export interface AIAgentOptions {
    * 不传或 undefined = 全部启用;显式传 false 可关闭指定内置工具。
    * 示例:builtinTools: { changeSkin: false } 关闭换肤工具。
    */
-  builtinTools?: { changeSkin?: boolean; pageErrors?: boolean };
+  builtinTools?: { changeSkin?: boolean; pageErrors?: boolean; memory?: boolean };
   /**
    * 皮肤名。可选:
    *   - 'iridescent-bloom' (默认,油彩/毛玻璃)
@@ -63,6 +63,21 @@ export interface AIAgentOptions {
   skin?: string;
   /** 页面感知:捕获宿主页面的 JS 报错、接口错误、错误弹窗,注入给 AI 主动感知。 */
   pageAwareness?: PageAwarenessOptions;
+  /**
+   * 记忆系统:纯前端 localStorage 持久化,让 AI 跨会话记住用户偏好/事实/历史。
+   * 详见 web-sdk/docs/sdk-api.md 记忆章节。
+   */
+  memory?: import('./memory').MemoryOptions;
+  /**
+   * 浮窗导航开关(决定哪些页面可见)。
+   * 不传:chat/settings=true,memory=跟随 memory.enabled,history=false。
+   */
+  pages?: {
+    chat?: boolean;
+    memory?: boolean;
+    settings?: boolean;
+    history?: boolean;
+  };
 }
 
 // ====================================================================
@@ -312,3 +327,18 @@ export interface PageAwarenessOptions {
   /** 采集到错误时的回调(宿主页面集成用,在过滤/脱敏之前调用) */
   onError?: (error: PageError) => void;
 }
+
+// ====================================================================
+// 记忆系统(Memory) — 转发 re-export
+// ====================================================================
+
+export type {
+  MemoryEntry,
+  MemoryCategory,
+  MemoryScope,
+  MemoryOptions,
+  MemorySaveInput,
+  CapacityErrorResult,
+  ForgetCandidate,
+  CompressCandidate,
+} from './memory';

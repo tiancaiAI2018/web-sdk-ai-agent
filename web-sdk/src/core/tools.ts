@@ -609,6 +609,23 @@ export {
 } from './validate-tool';
 
 // ====================================================================
+// 记忆工具 — 独立模块,转发导出
+// ====================================================================
+
+export { saveMemoryTool, recallMemoryTool } from './memory-tools';
+export {
+  MemoryEngine,
+  type MemoryEntry,
+  type MemoryCategory,
+  type MemoryScope,
+  type MemoryOptions,
+  type MemorySaveInput,
+  type CapacityErrorResult,
+  type ForgetCandidate,
+  type CompressCandidate,
+} from './memory';
+
+// ====================================================================
 // TOOL_SUSPENDED 恢复流
 // ====================================================================
 

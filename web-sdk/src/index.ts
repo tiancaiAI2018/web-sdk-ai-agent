@@ -30,6 +30,9 @@ export {
   pageErrorsTool,
   validateTool,
   runValidation,
+  saveMemoryTool,
+  recallMemoryTool,
+  MemoryEngine,
   type ToolCtx,
   type DictToolOptions,
   type ValidationRule,
@@ -37,6 +40,14 @@ export {
   type ValidationError,
   type ValidationSeverity,
   type ValidateToolOptions,
+  type MemoryEntry,
+  type MemoryCategory,
+  type MemoryScope,
+  type MemoryOptions,
+  type MemorySaveInput,
+  type CapacityErrorResult,
+  type ForgetCandidate,
+  type CompressCandidate,
 } from './core/tools';
 export { Widget } from './ui/widget';
 export { applyTheme, DEFAULT_THEME } from './ui/theme';

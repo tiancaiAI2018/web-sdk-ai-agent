@@ -410,6 +410,271 @@ var agent = AIAgent.init({
 
 ---
 
+## 记忆系统（Memory）
+
+让 AI 跨会话记住用户偏好、事实、历史操作。**纯前端 localStorage 持久化，零网络依赖，只存在当前设备**。
+
+### 核心设计：两个工具 + 轻量目录
+
+| 组件 | 作用 | 何时被调用 |
+|------|------|----------|
+| `save_memory` | 存一条记忆（key/value/category） | AI 听到用户说"记住..."时主动调 |
+| `recall_memory` | **完整模糊检索**（5 档匹配 + 加权评分） | AI 需要看具体记忆内容时主动调 |
+| `[Memory Index]` 自动注入 | **只列 key 目录**（不展开 value） | 每次发消息自动追加，AI 知道"有这些可查" |
+
+**关键点**：自动注入的是"目录"（~200 字符），不是全量 value。这样：
+
+- 1000 条记忆也不会爆 token
+- AI 真要看 value → 调 `recall_memory` 走同一套模糊评分
+- 记忆越多目录越完整，但体积增长有限（每条只贡献 1 个 key）
+
+### 注入的目录示例
+
+```text
+[Memory Index - 共 12 条记忆]
+可调 recall_memory({query:"..."}) 检索详情。
+pinned: 📌 city, 📌 default_warehouse, 📌 customer_phone
+其他: last_order, payment_method, ... (7 条)
+```
+
+### 数据模型
+
+```typescript
+export type MemoryCategory = 'preference' | 'fact' | 'history' | 'note';
+export type MemoryScope = 'global' | 'session';  // global=持久化, session=仅当前会话
+
+export interface MemoryEntry {
+  id: string;
+  category: MemoryCategory;
+  key: string;              // 短标识,如 'city' / 'default_warehouse'
+  value: string;            // 记忆内容
+  tags?: string[];          // 可选标签,便于按 tag 召回
+  scope: MemoryScope;
+  pinned: boolean;          // 置顶:目录里永远列在前面(最多 5 条,超出控制台警告)
+  createdAt: string;        // ISO
+  updatedAt: string;
+  hitCount: number;         // 被 recall 命中次数
+  lastHitAt?: string;
+}
+```
+
+### 模糊检索算法（`fuzzy.ts`）
+
+`recall_memory` 和 `[Memory Index]` 的非 pinned 部分**走同一套评分**：
+
+```
+score = 0.5 × keyMatch + 0.3 × valueMatch + 0.1 × tagMatch + 0.1 × recencyBonus
+```
+
+**5 档匹配**：
+1. **精确包含**（1.0）：`field.includes(q)` 或 `q.includes(field)`
+2. **前缀**（0.9）：`field.startsWith(q)`
+3. **分词全命中**（0.75）：q 按空格/标点切分，每段都在 field 中
+4. **近似**（0.4~0.7）：编辑距离 ≤ len/4，距离越近分越高
+5. **不命中**（0）
+
+**特殊优化**：
+- **同义词表**（硬编码常见对）："北京"↔"BJ"、"手机"↔"电话"、"加急"↔"urgent"
+- **置顶加分**：`pinned=true` 的 score += 0.05
+- **命中衰减**：30 天未命中 score × 0.9，90 天未命中 × 0.7
+
+**算法体积**：~150 行手写实现，**不引入 Fuse.js**（省 ~20KB bundle）。
+
+### 初始化
+
+```javascript
+AIAgent.init({
+  endpoint: 'http://localhost:8080',
+  getAccessToken: async () => ({ accessToken: '...' }),
+  memory: {
+    enabled: true,             // 总开关
+    maxEntries: 1000,          // 记忆上限,默认 1000
+    autoInject: true,          // 自动注入目录,默认 true
+    maxInjectCount: 10,        // 目录里非 pinned key 上限,默认 10
+    maxIndexChars: 200,        // 目录总字符上限,默认 200
+    onMemoryChange: (entries) => {  // 记忆变化回调
+      console.log('当前记忆数:', entries.length);
+    }
+  }
+});
+```
+
+### AI 自动使用
+
+```
+用户: "记住: 我在仓库 BJ 发货,客户编码 C001"
+AI 调 save_memory({key:'default_warehouse', value:'BJ', category:'preference', pinned:true})
+AI 调 save_memory({key:'customer_code', value:'C001', category:'fact'})
+AI: 已记住,以后默认用北京仓发货。
+
+[下次会话]
+用户: "帮我录一单,5台小米14"
+AI 看到 [Memory Index]: pinned: 📌 default_warehouse, 📌 customer_code
+AI: 好的,默认仓库 BJ,客户 C001。我帮你填,还需要客户姓名。
+```
+
+### 程序化 API
+
+```javascript
+// 保存(自动 upsert:同 category+key 会合并更新)
+const entry = agent.saveMemory({
+  key: 'default_warehouse',
+  value: 'BJ-北京中心仓',
+  category: 'preference',
+  pinned: true,
+  tags: ['仓库', '常用'],
+  scope: 'global'
+});
+
+// 检索(返回 MemoryEntry 数组,按 score 倒序)
+const hits = agent.recallMemory('北京');
+// → [{ key:'city', value:'北京', ... }, { key:'default_warehouse', value:'BJ...', ... }]
+
+// 类别过滤检索
+const prefs = agent.recallMemory('仓', { category: 'preference' });
+
+// 列出全部
+const all = agent.listMemories();
+const onlyPinned = agent.listMemories({ pinned: true });
+
+// 删除/清空
+agent.deleteMemory(entry.id);
+agent.clearMemories();
+
+// 导入导出(JSON,跨设备/跨账号迁移)
+const json = agent.exportMemories();           // string
+const imported = agent.importMemories(json);   // 实际导入条数
+
+// 订阅变更
+const unsub = agent.onMemoryChange((entries) => { /* ... */ });
+```
+
+### 内置开关
+
+```javascript
+// 关闭记忆工具(系统仍记,但 AI 不能调 save/recall)
+AIAgent.init({
+  ...
+  builtinTools: { memory: false }   // 默认开启
+});
+```
+
+### 浮窗浏览页
+
+启用记忆后，浮窗左侧会出现 🧠 入口。点击进入记忆浏览页：
+
+- 顶部搜索框（实时模糊检索）
+- 分类 filter chip（全部/偏好/事实/历史/备注）
+- 列表项：点击 📌/🗑 切换置顶/删除；点击 value 可内联编辑
+- 底部：导出 JSON / 从 JSON 导入 / 清空全部
+
+### AI 自动化（v2 计划）
+
+`memory.autoExtract` 配置（v2 待实现）允许 SDK 在每轮对话后调用小模型自动抽取值得记忆的 key-value，需用户确认后保存。v1 仅支持 AI 主动 `save_memory` 调用。
+
+### 容量与性能
+
+| 项 | 限制 | 说明 |
+|----|------|------|
+| 总条数 | 1000（可配 `maxEntries`） | 达到上限时 **save 返回 `capacity_full` 错误**（不静默 LRU） |
+| 字节数 | 4MB（可配 `maxBytes`） | 序列化估算，默认 4MB 留 1MB 余量 |
+| 单条 value | 无硬限 | 建议 < 500 字 |
+| localStorage | ~5MB | 每条记忆 < 500B，1000 条 ≈ 500KB |
+| 注入体积 | 200 字符（可配） | 目录模式，**不随记忆数线性增长** |
+| 模糊检索 | **1-3ms（千条内）** | 倒排索引 + Levenshtein，详见下 |
+
+### 性能优化：倒排索引
+
+```
+[query 到来] → tokenize(q) → 取所有 token 的 entryId 集合并集（去重）→ 精排
+                                       ↓
+                            （候选 < 3 时回退全表扫，处理同义词/拼写差异）
+```
+
+- **倒排表**：`token → Set<entryId>`，启动时从 `_entries` 一次性建好，后续 save/delete/update 增量维护
+- **1000 条 → 实际精排 20-50 条**，检索从 50ms 降到 1-3ms
+- **value 截前 500 字符** 入索引，避免巨型 value 让 tokenize 爆炸
+- **候选 < 3 自动回退全表扫**，兼容同义词（"北京" 查 "BJ"）和拼写差异
+
+### 容量错误机制（AI 主导）
+
+**v2 行为变更**：当 `maxEntries` 或 `maxBytes` 达到上限时，`save` 不再静默 LRU 淘汰，而是返回结构化错误给 AI，让 AI 决定怎么处理。
+
+#### 触发流程
+
+```
+AI: save_memory({key:"new", value:"...", category:"fact"})
+  → save() 检查容量，发现已满
+  → throw CapacityError（saveFromTool 捕获后转成 ok:false 返回）
+  → AI 收到错误响应，看到 suggestions 列表
+  → AI 决定:
+     A. 遗忘：查 forgetCandidates，删几条不重要的，再 save
+     B. 压缩：查 compressCandidates，合并相似条目，再 save
+     C. 提示用户手动清理（打开浮窗 → 🧠 记忆 → 清空）
+```
+
+#### 错误返回体结构
+
+```typescript
+interface CapacityErrorResult {
+  ok: false;
+  error: 'capacity_full';
+  current: number;          // 当前条目数
+  capacity: number;         // 上限
+  bytes: number;            // 当前字节估算
+  maxBytes: number;
+  suggestions: {
+    /** 5 条最久未用的非 pinned 记忆，按 lastHitAt 升序（null 优先） */
+    forgetCandidates: Array<{
+      id: string;
+      key: string;
+      value: string;
+      category: string;
+      daysSinceLastHit: number | null;
+      daysSinceUpdate: number;
+    }>;
+    /** 1-2 组可合并的记忆（同 category + 相似 key 前缀） */
+    compressCandidates: Array<{
+      ids: string[];
+      keys: string[];
+      category: string;
+      reason: string;
+    }>;
+  };
+  message: string;          // 人类可读建议
+}
+```
+
+#### 死循环保护
+
+同 `category:key` 在 5 分钟内连续 3 次触发 `capacity_full` → 自动 LRU 淘汰 1 条 + 强制保存，控制台 warn。
+
+避免 AI 选了"遗忘"但删完再 save 又满的无限循环。
+
+#### 配置项
+
+```javascript
+memory: {
+  maxEntries: 1000,        // 条目上限，默认 1000
+  maxBytes: 4 * 1024 * 1024, // 字节上限，默认 4MB
+  // ...其他
+}
+```
+
+#### 程序化 API 处理
+
+```javascript
+const result = agent.saveMemory({ key:"new", value:"...", category:"fact" });
+if (result && 'error' in result && result.error === 'capacity_full') {
+  console.log('容量满，候选:', result.suggestions.forgetCandidates);
+  // AI/宿主处理后让用户决定，再调 saveMemory
+} else {
+  console.log('保存成功:', result);
+}
+```
+
+---
+
 ## 皮肤系统
 
 ### 内置皮肤
